@@ -1,0 +1,134 @@
+linters:
+  enable:
+    - errcheck
+    - gosimple
+    - govet
+    - ineffassign
+    - staticcheck
+    - typecheck
+    - unused
+    - asciicheck
+    - bidichk
+    - contextcheck
+    - cyclop
+    - decorder
+    - depguard
+    - dogsled
+    - dupl
+    - dupword
+    - durationcheck
+    - errchkjson
+    - errname
+    - errorlint
+    - exhaustive
+    - exportloopref
+    - forbidigo
+    - forcetypeassert
+    - funlen
+    - gocognit
+    - goconst
+    - gocritic
+    - gocyclo
+    - godox
+    - goerr113
+    - gofmt
+    - goheader
+    - goimports
+    - gomoddirectives
+    - goprintffuncname
+    - gosec
+    - grouper
+    - importas
+    - lll
+    - maintidx
+    - makezero
+    - misspell
+    - nakedret
+    - nestif
+    - nilerr
+    - nlreturn
+    - noctx
+    - nolintlint
+    - nosprintfhostport
+    - paralleltest
+    - prealloc
+    - predeclared
+    - reassign
+    - rowserrcheck
+    - tenv
+    - thelper
+    - tparallel
+    - unconvert
+    - unparam
+    - usestdlibvars
+    - wastedassign
+    - whitespace
+    - wrapcheck
+    - wsl
+linters-settings:
+  wsl:
+    allow-cuddle-declarations: true
+  lll:
+    line-length: 160
+    tab-width: 2
+  cyclop:
+    max-complexity: 15
+    ignore-tests: true
+  wrapcheck:
+    ignoreSigRegexps:
+      - \.New.*Error.*\(
+      - json.Marshal.*\(
+      - \.Err()
+    ignoreInterfaceRegexps:
+      - ^.*$
+    ignorePackageGlobs:
+      - github.com/bridgelightcloud/*
+  depguard:
+    rules:
+      main:
+        list-mode: lax
+        files:
+          - "!**/*_a _file.go"
+        allow:
+          - $gostd
+          - github.com/OpenPeeDeeP
+        deny:
+          - pkg: "github.com/sirupsen/logrus"
+            desc: not allowed
+severity:
+  default-severity: error
+  rules:
+    - linters:
+      - godox
+      severity: notice
+issues:
+  exclude-rules:
+    - path: _test\.go|\/test\/
+      linters:
+        - funlen
+        - dupword
+        - gocyclo
+        - dupl
+        - gosec
+        - wrapcheck
+        - goerr113
+        - errcheck
+        - forcetypeassert
+        - goconst
+        - contextcheck
+    - path: /glidererr
+      linters:
+        - goerr113
+        - errorlint
+    - path: tools/.*
+      linters:
+        - forbidigo
+        - gomnd
+        - wrapcheck
+        - goerr113
+        - unparam
+        - gosec
+        - funlen
+    - linters:
+        - contextcheck
+      source: .*\.Unlock()

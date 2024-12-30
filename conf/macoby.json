@@ -1,0 +1,10 @@
+{
+	"mountpoints": {
+		"/var/lib/docker": {
+			"device": "vdb",
+			"fstype": "ext4",
+			"format": true
+		}
+	},
+	"service": "/usr/bin/dockerd"
+}

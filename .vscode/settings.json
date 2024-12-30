@@ -1,0 +1,10 @@
+{
+  "gopls": {
+    "env": {
+      "CGO_ENABLED": "1",
+    }
+  },
+  "terminal.integrated.env.linux": {
+    "CGO_ENABLED": "1"
+  }
+}
