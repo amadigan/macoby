@@ -135,8 +135,11 @@ func (r *remoteStdin) Write(bs []byte) (int, error) {
 	return len(bs), nil
 }
 
-func handleRemoteOut(stdout io.Writer, stderr io.Writer, sigchan chan<- int8, conn net.Conn) {
+func handleRemoteOut(stdout io.WriteCloser, stderr io.WriteCloser, sigchan chan<- int8, conn net.Conn) {
 	buf := make([]byte, 1024)
+
+	outClosed := false
+	errClosed := false
 
 	for {
 		if _, err := conn.Read(buf); err != nil {
@@ -160,6 +163,13 @@ func handleRemoteOut(stdout io.Writer, stderr io.Writer, sigchan chan<- int8, co
 				break
 			}
 
+			if len(bs) == 0 {
+				stdout.Close()
+				outClosed = true
+
+				continue
+			}
+
 			if _, err := stdout.Write(bs); err != nil {
 				break
 			}
@@ -170,10 +180,25 @@ func handleRemoteOut(stdout io.Writer, stderr io.Writer, sigchan chan<- int8, co
 				break
 			}
 
+			if len(bs) == 0 {
+				stderr.Close()
+				errClosed = true
+
+				continue
+			}
+
 			if _, err := stderr.Write(bs); err != nil {
 				break
 			}
 		}
+	}
+
+	if !outClosed {
+		stdout.Close()
+	}
+
+	if !errClosed {
+		stderr.Close()
 	}
 }
 

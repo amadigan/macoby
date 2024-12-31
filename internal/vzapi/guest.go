@@ -87,15 +87,12 @@ func handleExec(ctx context.Context, conn net.Conn, h Handler) error {
 
 	process, err := h.Exec(ctx, req)
 
-	if err != nil {
-		if err := writeMessage(conn, MessageTypeStderr, err.Error()); err != nil {
-			return err
-		}
+	if wrErr := writeError(conn, err); wrErr != nil {
+		return wrErr
+	}
 
-		var signal int8 = -1
-		if _, err = conn.Write([]byte{byte(MessageTypeSignal), byte(signal)}); err != nil {
-			return err
-		}
+	if err != nil {
+		return nil
 	}
 
 	go handleProcessInput(conn, process)
@@ -183,6 +180,8 @@ func proxyOutput(reader io.ReadCloser, outCh chan<- []byte) {
 
 		outCh <- buf[:n]
 	}
+
+	outCh <- nil
 }
 
 func handleConnect(ctx context.Context, conn net.Conn, h Handler) error {

@@ -173,12 +173,15 @@ func TestExec(t *testing.T) {
 
 	defer close(rcChan)
 
+	sigOut := make(chan int8, 1)
+	sigIn := make(chan int8, 1)
+
 	process := &Process{
 		Stdin:          &mockStream{Buffer: &bytes.Buffer{}},
 		Stdout:         &mockStream{Buffer: bytes.NewBufferString("stdout")},
 		Stderr:         &mockStream{Buffer: bytes.NewBufferString("stderr")},
-		SignalReceiver: make(chan int8),
-		SignalSender:   make(chan int8),
+		SignalReceiver: sigIn,
+		SignalSender:   sigOut,
 	}
 
 	handler := &mockHandler{
@@ -217,18 +220,40 @@ func TestExec(t *testing.T) {
 
 	assert.Equal(t, req, got)
 
-	out, err := io.ReadAll(rp.Stdout)
+	outCh := make(chan []byte)
+	errCh := make(chan []byte)
 
-	assert.NoError(t, err)
+	go func() {
+		defer close(outCh)
+		bs, err := io.ReadAll(rp.Stdout)
+
+		assert.NoError(t, err)
+
+		outCh <- bs
+	}()
+
+	go func() {
+		defer close(errCh)
+		bs, err := io.ReadAll(rp.Stderr)
+
+		assert.NoError(t, err)
+
+		errCh <- bs
+	}()
+
+	out := <-outCh
 	assert.Equal(t, "stdout", string(out))
 
-	out, err = io.ReadAll(rp.Stderr)
-
-	assert.NoError(t, err)
-
+	out = <-errCh
 	assert.Equal(t, "stderr", string(out))
 
 	rp.SignalSender <- 1
+
+	received := <-sigOut
+
+	assert.Equal(t, int8(1), received)
+
+	sigIn <- 1
 
 	signal := <-rp.SignalReceiver
 
