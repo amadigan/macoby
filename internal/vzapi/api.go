@@ -11,7 +11,8 @@ const APIPort = 1
 type MessageType uint8
 
 const (
-	MessageTypeShutdown MessageType = iota + 1
+	MessageTypeInfo MessageType = iota + 1
+	MessageTypeShutdown
 	MessageTypeMount
 	MessageTypeWrite
 	MessageTypeExec
@@ -21,6 +22,16 @@ const (
 	MessageTypeStderr
 	MessageTypeConnect
 )
+
+type InfoRequest struct {
+	ProtocolVersion uint32 `json:"version"`
+}
+
+type InfoResponse struct {
+	ProtocolVersion uint32 `json:"version"`
+	IP              string `json:"ip"`
+	IPv6            string `json:"ipv6"`
+}
 
 type MountRequest struct {
 	FS       string `json:"type"`
@@ -78,6 +89,12 @@ func write(conn net.Conn, buf []byte) error {
 
 	if size > 0xffffffff {
 		return io.ErrShortWrite
+	}
+
+	if size == 0 {
+		_, err := conn.Write([]byte{0, 0, 0, 0})
+
+		return err
 	}
 
 	if _, err := conn.Write([]byte{byte(size), byte(size >> 8), byte(size >> 16), byte(size >> 24)}); err != nil {

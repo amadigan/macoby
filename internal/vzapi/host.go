@@ -1,6 +1,7 @@
 package vzapi
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -8,6 +9,26 @@ import (
 
 type Client struct {
 	Conn net.Conn
+}
+
+func (c *Client) Info(r InfoRequest) (InfoResponse, error) {
+	if err := writeMessage(c.Conn, MessageTypeInfo, r); err != nil {
+		return InfoResponse{}, err
+	}
+
+	buf, err := read(c.Conn)
+
+	if err != nil {
+		return InfoResponse{}, err
+	}
+
+	var res InfoResponse
+
+	if err := json.Unmarshal(buf, &res); err != nil {
+		return InfoResponse{}, err
+	}
+
+	return res, nil
 }
 
 func (c *Client) Shutdown() error {
@@ -91,7 +112,7 @@ func (c *Client) Exec(req ExecRequest) (*RemoteProcess, error) {
 	serrR, serrW := io.Pipe()
 	sigOut := make(chan int8, 1)
 	sigIn := make(chan int8, 1)
-	sinCh := make(chan []byte)
+	sinCh := make(chan []byte, 1)
 
 	process := &RemoteProcess{
 		Stdin:          &remoteStdin{msgChan: sinCh},
@@ -136,7 +157,7 @@ func (r *remoteStdin) Write(bs []byte) (int, error) {
 }
 
 func handleRemoteOut(stdout io.WriteCloser, stderr io.WriteCloser, sigchan chan<- int8, conn net.Conn) {
-	buf := make([]byte, 1024)
+	buf := make([]byte, 1)
 
 	outClosed := false
 	errClosed := false
@@ -202,8 +223,8 @@ func handleRemoteOut(stdout io.WriteCloser, stderr io.WriteCloser, sigchan chan<
 	}
 }
 
-func (c *Client) Connect(req ConnectRequest) (net.Conn, error) {
-	if err := writeMessage(c.Conn, MessageTypeConnect, req); err != nil {
+func (c *Client) Connect(network, address string) (net.Conn, error) {
+	if err := writeMessage(c.Conn, MessageTypeConnect, ConnectRequest{Network: network, Address: address}); err != nil {
 		return nil, err
 	}
 

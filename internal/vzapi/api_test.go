@@ -12,11 +12,20 @@ import (
 )
 
 type mockHandler struct {
+	InfoFunc     func(context.Context, InfoRequest) InfoResponse
 	ShutdownFunc func(context.Context)
 	MountFunc    func(context.Context, MountRequest) error
 	WriteFunc    func(context.Context, WriteRequest) error
 	ExecFunc     func(context.Context, ExecRequest) (*Process, error)
 	ConnectFunc  func(context.Context, ConnectRequest, net.Conn) (net.Conn, error)
+}
+
+func (m *mockHandler) Info(ctx context.Context, req InfoRequest) InfoResponse {
+	if m.InfoFunc != nil {
+		return m.InfoFunc(ctx, req)
+	}
+
+	return InfoResponse{}
 }
 
 func (m *mockHandler) Shutdown(ctx context.Context) {
@@ -65,7 +74,35 @@ func setup(handler Handler) Client {
 	return Client{Conn: left}
 }
 
+func TestInfo(t *testing.T) {
+	t.Parallel()
+
+	handler := &mockHandler{
+		InfoFunc: func(_ context.Context, req InfoRequest) InfoResponse {
+			return InfoResponse{
+				ProtocolVersion: req.ProtocolVersion,
+				IP:              "127.0.0.1",
+				IPv6:            "::1",
+			}
+		},
+	}
+
+	c := setup(handler)
+
+	req := InfoRequest{ProtocolVersion: 1}
+
+	res, err := c.Info(req)
+
+	assert.NoError(t, err)
+	assert.Equal(t, req.ProtocolVersion, res.ProtocolVersion)
+	assert.Equal(t, "127.0.0.1", res.IP)
+	assert.Equal(t, "::1", res.IPv6)
+
+}
+
 func TestShutdown(t *testing.T) {
+	t.Parallel()
+
 	rcChan := make(chan struct{})
 
 	handler := &mockHandler{
@@ -93,6 +130,8 @@ func TestShutdown(t *testing.T) {
 }
 
 func TestMount(t *testing.T) {
+	t.Parallel()
+
 	rcChan := make(chan MountRequest, 1)
 
 	defer close(rcChan)
@@ -132,6 +171,8 @@ func TestMount(t *testing.T) {
 }
 
 func TestWrite(t *testing.T) {
+	t.Parallel()
+
 	rcChan := make(chan WriteRequest, 1)
 
 	defer close(rcChan)
@@ -169,12 +210,22 @@ func TestWrite(t *testing.T) {
 }
 
 func TestExec(t *testing.T) {
+	t.Parallel()
+
 	rcChan := make(chan ExecRequest, 1)
 
 	defer close(rcChan)
 
 	sigOut := make(chan int8, 1)
 	sigIn := make(chan int8, 1)
+
+	go func() {
+		sig := <-sigIn
+
+		assert.Equal(t, int8(1), sig)
+
+		sigOut <- sig
+	}()
 
 	process := &Process{
 		Stdin:          &mockStream{Buffer: &bytes.Buffer{}},
@@ -249,15 +300,35 @@ func TestExec(t *testing.T) {
 
 	rp.SignalSender <- 1
 
-	received := <-sigOut
-
-	assert.Equal(t, int8(1), received)
-
-	sigIn <- 1
-
 	signal := <-rp.SignalReceiver
 
 	assert.Equal(t, int8(1), signal)
+}
+
+func TestConnect(t *testing.T) {
+	t.Parallel()
+
+	rcChan := make(chan ConnectRequest, 1)
+
+	defer close(rcChan)
+
+	handler := &mockHandler{
+		ConnectFunc: func(_ context.Context, req ConnectRequest, conn net.Conn) (net.Conn, error) {
+			rcChan <- req
+			return conn, nil
+		},
+	}
+
+	c := setup(handler)
+
+	req := ConnectRequest{
+		Network: "tcp",
+		Address: "127.0.0.1:80",
+	}
+
+	conn, err := c.Connect(req)
+
+	assert.NoError(t, err)
 }
 
 type mockStream struct {
@@ -271,3 +342,32 @@ func (m *mockStream) Close() error {
 
 	return nil
 }
+
+type mockListener struct {
+	connCh chan net.Conn
+}
+
+func (m *mockListener) Accept() (net.Conn, error) {
+	conn, ok := <-m.connCh
+
+	if !ok {
+		return nil, io.EOF
+	}
+
+	return conn, nil
+}
+
+func (m *mockListener) Close() error {
+	close(m.connCh)
+
+	return nil
+}
+
+func (m *mockListener) Addr() net.Addr {
+	return pipeAddr{}
+}
+
+type pipeAddr struct{}
+
+func (pipeAddr) Network() string { return "pipe" }
+func (pipeAddr) String() string  { return "mockserver" }

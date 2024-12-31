@@ -9,6 +9,7 @@ import (
 )
 
 type Handler interface {
+	Info(context.Context, InfoRequest) InfoResponse
 	Shutdown(context.Context)
 	Mount(context.Context, MountRequest) error
 	Write(context.Context, WriteRequest) error
@@ -17,6 +18,30 @@ type Handler interface {
 }
 
 type handler func(context.Context, net.Conn, Handler) error
+
+func handleInfo(ctx context.Context, conn net.Conn, h Handler) error {
+	buf, err := read(conn)
+
+	if err != nil {
+		return err
+	}
+
+	var req InfoRequest
+
+	if err := json.Unmarshal(buf, &req); err != nil {
+		return err
+	}
+
+	res := h.Info(ctx, req)
+
+	bs, err := json.Marshal(res)
+
+	if err != nil {
+		return err
+	}
+
+	return write(conn, bs)
+}
 
 func handleShutdown(ctx context.Context, _ net.Conn, h Handler) error {
 	h.Shutdown(ctx)
@@ -137,39 +162,52 @@ func handleProcessInput(conn net.Conn, process *Process) {
 }
 
 func handleProcessOutput(conn net.Conn, process *Process) {
-	stdoutCh := make(chan []byte)
-	stderrCh := make(chan []byte)
+	stdoutCh := make(chan []byte, 1)
+	stderrCh := make(chan []byte, 1)
 
-	go proxyOutput(process.Stdout, stdoutCh)
-	go proxyOutput(process.Stderr, stderrCh)
+	go proxyOutput(process.Stdout, stdoutCh, "stdout")
+	go proxyOutput(process.Stderr, stderrCh, "stderr")
+
+	defer close(stdoutCh)
+	defer close(stderrCh)
 
 	for {
 		select {
 		case bs := <-stdoutCh:
-			if err := writeMessage(conn, MessageTypeStdout, bs); err != nil {
+			log.Printf("writing stdout, len %d", len(bs))
+			if _, err := conn.Write([]byte{byte(MessageTypeStdout)}); err != nil {
 				return
 			}
+
+			if err := write(conn, bs); err != nil {
+				return
+			}
+			log.Printf("wrote stdout")
 		case bs := <-stderrCh:
-			if err := writeMessage(conn, MessageTypeStderr, bs); err != nil {
+			log.Printf("writing stderr, len %d", len(bs))
+			if _, err := conn.Write([]byte{byte(MessageTypeStderr)}); err != nil {
 				return
 			}
+
+			if err := write(conn, bs); err != nil {
+				return
+			}
+			log.Printf("wrote stderr")
 		case signal, ok := <-process.SignalSender:
 			if !ok {
 				return
 			}
-
+			log.Printf("writing signal")
 			if _, err := conn.Write([]byte{byte(MessageTypeSignal), byte(signal)}); err != nil {
 				return
 			}
+			log.Printf("wrote signal")
 		}
 	}
-
 }
 
-func proxyOutput(reader io.ReadCloser, outCh chan<- []byte) {
+func proxyOutput(reader io.ReadCloser, outCh chan<- []byte, name string) {
 	buf := make([]byte, 4096)
-
-	defer close(outCh)
 
 	for {
 		n, err := reader.Read(buf)
@@ -178,10 +216,16 @@ func proxyOutput(reader io.ReadCloser, outCh chan<- []byte) {
 			break
 		}
 
+		if n == 0 {
+			panic("read 0 bytes")
+		}
+
+		log.Printf("read %d bytes", n)
 		outCh <- buf[:n]
 	}
 
-	outCh <- nil
+	log.Printf("closing output channel: %s", name)
+	outCh <- []byte{}
 }
 
 func handleConnect(ctx context.Context, conn net.Conn, h Handler) error {
@@ -237,6 +281,8 @@ func Handle(ctx context.Context, conn net.Conn, h Handler) {
 		term := false
 
 		switch typ {
+		case MessageTypeInfo:
+			handler = handleInfo
 		case MessageTypeShutdown:
 			handler = handleShutdown
 		case MessageTypeMount:
