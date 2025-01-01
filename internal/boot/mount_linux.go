@@ -26,7 +26,6 @@ func MountCoreFS() {
 	util.Must(MountProc())
 	util.Must(MountSys())
 	util.Must(MountCgroup())
-	util.Must(MountTmp("tmpfs", "/tmp", 1024*1024))
 }
 
 func MountTmp(device string, mountpoint string, size int64) error {
@@ -93,46 +92,47 @@ func OverlayRoot() error {
 	}
 
 	if err := os.MkdirAll(path.Join(OverlayPath, "upper"), 0755); err != nil {
-		return fmt.Errorf("Failed to create upper overlay directory: %v", err)
+		return fmt.Errorf("Failed to create upper overlay directory: %w", err)
 	}
 
 	if err := os.MkdirAll(path.Join(OverlayPath, "work"), 0755); err != nil {
-		return fmt.Errorf("Failed to create work overlay directory: %v", err)
+		return fmt.Errorf("Failed to create work overlay directory: %w", err)
 	}
 
 	if err := os.MkdirAll(path.Join(OverlayPath, "oldroot"), 0755); err != nil {
-		return fmt.Errorf("Failed to create merged overlay directory: %v", err)
+		return fmt.Errorf("Failed to create merged overlay directory: %w", err)
 	}
 
 	if err := os.MkdirAll(path.Join(OverlayPath, "newroot"), 0755); err != nil {
-		return fmt.Errorf("Failed to create merged overlay directory: %v", err)
+		return fmt.Errorf("Failed to create merged overlay directory: %w", err)
 	}
 
 	// mount oldroot (/dev/vda) to lower
 	if err := unix.Mount("/dev/vda", path.Join(OverlayPath, "oldroot"), "squashfs", 0, "ro"); err != nil {
-		return fmt.Errorf("Failed to mount lower overlay: %v", err)
+		return fmt.Errorf("Failed to mount lower overlay: %w", err)
 	}
 
-	mountOpts := fmt.Sprintf("lowerdir=%s,upperdir=%s,workdir=%s", path.Join(OverlayPath, "oldroot"), path.Join(OverlayPath, "upper"), path.Join(OverlayPath, "work"))
+	mountOpts := fmt.Sprintf("lowerdir=%s,upperdir=%s,workdir=%s", path.Join(OverlayPath, "oldroot"),
+		path.Join(OverlayPath, "upper"), path.Join(OverlayPath, "work"))
 
 	if err := unix.Mount("overlay", "/overlay/newroot", "overlay", 0, mountOpts); err != nil {
-		return fmt.Errorf("Failed to mount overlay: %v", err)
+		return fmt.Errorf("Failed to mount overlay: %w", err)
 	}
 
 	if err := os.MkdirAll("/overlay/newroot/oldroot", 0755); err != nil {
-		return fmt.Errorf("Failed to create oldroot directory: %v", err)
+		return fmt.Errorf("Failed to create oldroot directory: %w", err)
 	}
 
 	if err := unix.PivotRoot("/overlay/newroot", "/overlay/newroot/oldroot"); err != nil {
-		return fmt.Errorf("Failed to pivot root: %v", err)
+		return fmt.Errorf("Failed to pivot root: %w", err)
 	}
 
 	if err := unix.Mount("devtmpfs", "/dev", "devtmpfs", unix.MS_NOSUID|unix.MS_STRICTATIME, ""); err != nil {
-		return fmt.Errorf("Failed to mount /dev: %v", err)
+		return fmt.Errorf("Failed to mount /dev: %w", err)
 	}
 
 	if err := unix.Unmount("/oldroot/dev", 0); err != nil {
-		return fmt.Errorf("Failed to unmount /oldroot/dev: %v", err)
+		return fmt.Errorf("Failed to unmount /oldroot/dev: %w", err)
 	}
 
 	return nil

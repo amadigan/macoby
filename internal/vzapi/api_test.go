@@ -5,6 +5,7 @@ import (
 	"context"
 	"io"
 	"net"
+	"net/http"
 	"testing"
 	"time"
 
@@ -91,7 +92,7 @@ func TestInfo(t *testing.T) {
 
 	req := InfoRequest{ProtocolVersion: 1}
 
-	res, err := c.Info(req)
+	res, err := c.Info(context.Background(), req)
 
 	assert.NoError(t, err)
 	assert.Equal(t, req.ProtocolVersion, res.ProtocolVersion)
@@ -113,7 +114,7 @@ func TestShutdown(t *testing.T) {
 
 	c := setup(handler)
 
-	if err := c.Shutdown(); err != nil {
+	if err := c.Shutdown(context.Background()); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -152,7 +153,7 @@ func TestMount(t *testing.T) {
 		ReadOnly: true,
 	}
 
-	if err := c.Mount(req); err != nil {
+	if err := c.Mount(context.Background(), req); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -191,7 +192,7 @@ func TestWrite(t *testing.T) {
 		Data: []byte("localhost\t127.0.0.1\n"),
 	}
 
-	if err := c.Write(req); err != nil {
+	if err := c.Write(context.Background(), req); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -251,7 +252,7 @@ func TestExec(t *testing.T) {
 		Env:  []string{"LANG=en_US.UTF-8"},
 	}
 
-	rp, err := c.Exec(req)
+	rp, err := c.Exec(context.Background(), req)
 
 	assert.NoError(t, err)
 
@@ -312,23 +313,48 @@ func TestConnect(t *testing.T) {
 
 	defer close(rcChan)
 
+	server := http.Server{
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			assert.Equal(t, "GET", r.Method)
+			assert.Equal(t, "/", r.URL.Path)
+			w.Header().Set("Content-Type", "text/plain")
+
+			w.WriteHeader(http.StatusOK)
+
+			w.Write([]byte("hello, world"))
+		}),
+	}
+
+	listener := &mockListener{connCh: make(chan net.Conn, 1)}
+
+	go server.Serve(listener)
+
+	defer server.Close()
+
 	handler := &mockHandler{
 		ConnectFunc: func(_ context.Context, req ConnectRequest, conn net.Conn) (net.Conn, error) {
 			rcChan <- req
-			return conn, nil
+			left, right := net.Pipe()
+			listener.connCh <- right
+
+			return left, nil
 		},
 	}
 
 	c := setup(handler)
 
-	req := ConnectRequest{
-		Network: "tcp",
-		Address: "127.0.0.1:80",
-	}
+	httpClient := http.Client{Transport: &http.Transport{DialContext: c.DialContext}}
 
-	conn, err := c.Connect(req)
+	resp, err := httpClient.Get("http://localhost/")
+	assert.NoError(t, err)
+
+	bs, err := io.ReadAll(resp.Body)
 
 	assert.NoError(t, err)
+
+	assert.Equal(t, "hello, world", string(bs))
+	assert.NoError(t, resp.Body.Close())
+	assert.Equal(t, "text/plain", resp.Header.Get("Content-Type"))
 }
 
 type mockStream struct {

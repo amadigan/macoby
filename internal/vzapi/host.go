@@ -1,6 +1,7 @@
 package vzapi
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -11,7 +12,7 @@ type Client struct {
 	Conn net.Conn
 }
 
-func (c *Client) Info(r InfoRequest) (InfoResponse, error) {
+func (c *Client) Info(_ context.Context, r InfoRequest) (InfoResponse, error) {
 	if err := writeMessage(c.Conn, MessageTypeInfo, r); err != nil {
 		return InfoResponse{}, err
 	}
@@ -31,11 +32,11 @@ func (c *Client) Info(r InfoRequest) (InfoResponse, error) {
 	return res, nil
 }
 
-func (c *Client) Shutdown() error {
+func (c *Client) Shutdown(_ context.Context) error {
 	return writeMessage(c.Conn, MessageTypeShutdown, nil)
 }
 
-func (c *Client) Mount(req MountRequest) error {
+func (c *Client) Mount(_ context.Context, req MountRequest) error {
 	if err := writeMessage(c.Conn, MessageTypeMount, req); err != nil {
 		return err
 	}
@@ -67,7 +68,7 @@ func (c *Client) readError() (string, error) {
 	return string(buf), nil
 }
 
-func (c *Client) Write(req WriteRequest) error {
+func (c *Client) Write(_ context.Context, req WriteRequest) error {
 	if err := writeMessage(c.Conn, MessageTypeWrite, req); err != nil {
 		return err
 	}
@@ -93,7 +94,7 @@ type RemoteProcess struct {
 	SignalSender   chan<- int8
 }
 
-func (c *Client) Exec(req ExecRequest) (*RemoteProcess, error) {
+func (c *Client) Exec(_ context.Context, req ExecRequest) (*RemoteProcess, error) {
 	if err := writeMessage(c.Conn, MessageTypeExec, req); err != nil {
 		return nil, err
 	}
@@ -223,7 +224,7 @@ func handleRemoteOut(stdout io.WriteCloser, stderr io.WriteCloser, sigchan chan<
 	}
 }
 
-func (c *Client) Connect(network, address string) (net.Conn, error) {
+func (c *Client) DialContext(_ context.Context, network string, address string) (net.Conn, error) {
 	if err := writeMessage(c.Conn, MessageTypeConnect, ConnectRequest{Network: network, Address: address}); err != nil {
 		return nil, err
 	}
