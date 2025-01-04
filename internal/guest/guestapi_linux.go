@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
-	"fmt"
 	"log"
 	"net"
 	"os"
@@ -14,7 +13,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/amadigan/macoby/internal/block"
 	"github.com/amadigan/macoby/internal/vzapi"
 	"github.com/mdlayher/vsock"
 	"golang.org/x/sys/unix"
@@ -137,47 +135,6 @@ func (g *Guest) Mount(ctx context.Context, req vzapi.MountRequest) error {
 
 	if req.ReadOnly {
 		flags |= unix.MS_RDONLY
-	} else if req.FS == "btrfs" || req.FS == "ext4" || req.FS == "xfs" || req.FS == "swap" {
-		table := block.PartitionTable{Device: device}
-
-		if err := table.ReadDevice(); err != nil {
-			return fmt.Errorf("Unable to read device %s: %v", req.Device, err)
-		}
-
-		if table.Type != block.TableRaw {
-			// scan for a partition with the correct filesystem
-			found := false
-
-			for _, part := range table.Partitions {
-				if string(part.FilesystemType) == req.FS {
-					device = part.Device
-					found = true
-
-					break
-				}
-			}
-
-			if !found {
-				return fmt.Errorf("No partition found with filesystem %s", req.FS)
-			}
-		} else if part := table.Partitions[0]; part.FilesystemType == block.FSnone {
-			switch req.FS {
-			case "ext4":
-				if err := mkext4(device, req.FormatOptions); err != nil {
-					return err
-				}
-			case "btrfs":
-				if err := mkbtrfs(device, req.FormatOptions); err != nil {
-					return err
-				}
-			case "swap":
-				if err := mkswap(device, req.FormatOptions); err != nil {
-					return err
-				}
-			default:
-				return fmt.Errorf("Unsupported mkfs filesystem %s", req.FS)
-			}
-		}
 	}
 
 	if err := os.MkdirAll(req.Target, 0755); err != nil {
