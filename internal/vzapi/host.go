@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net"
 )
 
@@ -86,144 +85,6 @@ func (c *Client) Write(_ context.Context, req WriteRequest) error {
 	return nil
 }
 
-type RemoteProcess struct {
-	Stdin          io.Writer
-	Stdout         io.Reader
-	Stderr         io.Reader
-	SignalReceiver <-chan int8
-	SignalSender   chan<- int8
-}
-
-func (c *Client) Exec(_ context.Context, req ExecRequest) (*RemoteProcess, error) {
-	if err := writeMessage(c.Conn, MessageTypeExec, req); err != nil {
-		return nil, err
-	}
-
-	errstr, err := c.readError()
-
-	if err != nil {
-		return nil, err
-	}
-
-	if errstr != "" {
-		return nil, fmt.Errorf("exec failed: %s", errstr)
-	}
-
-	soutR, soutW := io.Pipe()
-	serrR, serrW := io.Pipe()
-	sigOut := make(chan int8, 1)
-	sigIn := make(chan int8, 1)
-	sinCh := make(chan []byte, 1)
-
-	process := &RemoteProcess{
-		Stdin:          &remoteStdin{msgChan: sinCh},
-		Stdout:         soutR,
-		Stderr:         serrR,
-		SignalReceiver: sigOut,
-		SignalSender:   sigIn,
-	}
-
-	go handleRemoteOut(soutW, serrW, sigOut, c.Conn)
-
-	go func() {
-		for {
-			select {
-			case bs := <-sinCh:
-				if err := writeMessage(c.Conn, MessageTypeStdin, bs); err != nil {
-					return
-				}
-			case signal, ok := <-sigIn:
-				if !ok {
-					return
-				}
-
-				if _, err := c.Conn.Write([]byte{byte(MessageTypeSignal), byte(signal)}); err != nil {
-					return
-				}
-			}
-		}
-	}()
-
-	return process, nil
-}
-
-type remoteStdin struct {
-	msgChan chan []byte
-}
-
-func (r *remoteStdin) Write(bs []byte) (int, error) {
-	r.msgChan <- bs
-
-	return len(bs), nil
-}
-
-func handleRemoteOut(stdout io.WriteCloser, stderr io.WriteCloser, sigchan chan<- int8, conn net.Conn) {
-	buf := make([]byte, 1)
-
-	outClosed := false
-	errClosed := false
-
-	for {
-		if _, err := conn.Read(buf); err != nil {
-			break
-		}
-
-		typ := MessageType(buf[0])
-
-		if typ == MessageTypeSignal {
-			if _, err := conn.Read(buf); err != nil {
-				break
-			}
-
-			signal := int8(buf[0])
-
-			sigchan <- signal
-		} else if typ == MessageTypeStdout {
-			bs, err := read(conn)
-
-			if err != nil {
-				break
-			}
-
-			if len(bs) == 0 {
-				stdout.Close()
-				outClosed = true
-
-				continue
-			}
-
-			if _, err := stdout.Write(bs); err != nil {
-				break
-			}
-		} else if typ == MessageTypeStderr {
-			bs, err := read(conn)
-
-			if err != nil {
-				break
-			}
-
-			if len(bs) == 0 {
-				stderr.Close()
-				errClosed = true
-
-				continue
-			}
-
-			if _, err := stderr.Write(bs); err != nil {
-				break
-			}
-		}
-	}
-
-	if !outClosed {
-		stdout.Close()
-	}
-
-	if !errClosed {
-		stderr.Close()
-	}
-}
-
 func (c *Client) DialContext(_ context.Context, network string, address string) (net.Conn, error) {
 	if err := writeMessage(c.Conn, MessageTypeConnect, ConnectRequest{Network: network, Address: address}); err != nil {
 		return nil, err
@@ -240,4 +101,22 @@ func (c *Client) DialContext(_ context.Context, network string, address string) 
 	}
 
 	return c.Conn, nil
+}
+
+func (c *Client) Launch(_ context.Context, req LaunchRequest) error {
+	if err := writeMessage(c.Conn, MessageTypeLaunch, req); err != nil {
+		return err
+	}
+
+	errstr, err := c.readError()
+
+	if err != nil {
+		return err
+	}
+
+	if errstr != "" {
+		return fmt.Errorf("launch failed: %s", errstr)
+	}
+
+	return nil
 }

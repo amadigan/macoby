@@ -1,52 +1,51 @@
 package main
 
 import (
+	"context"
+	"fmt"
+	"io"
 	"log"
+	"net"
 	"os"
 	"os/signal"
+	"path"
+	"runtime"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/Code-Hex/vz/v3"
-	"github.com/pkg/term/termios"
-	"golang.org/x/sys/unix"
+	"github.com/amadigan/macoby/internal/vzapi"
+	"github.com/docker/cli/cli/command"
 )
 
-// https://developer.apple.com/documentation/virtualization/running_linux_in_a_virtual_machine?language=objc#:~:text=Configure%20the%20Serial%20Port%20Device%20for%20Standard%20In%20and%20Out
-func setRawMode(f *os.File) {
-	var attr unix.Termios
-
-	// Get settings for terminal
-	termios.Tcgetattr(f.Fd(), &attr)
-
-	// Put stdin into raw mode, disabling local echo, input canonicalization,
-	// and CR-NL mapping.
-	attr.Iflag &^= syscall.ICRNL
-	attr.Lflag &^= syscall.ICANON | syscall.ECHO
-
-	// Set minimum characters when reading = 1 char
-	attr.Cc[syscall.VMIN] = 1
-
-	// set timeout when reading as non-canonical mode
-	attr.Cc[syscall.VTIME] = 0
-
-	// reflects the changed settings
-	termios.Tcsetattr(f.Fd(), termios.TCSANOW, &attr)
+var mountPaths = map[string]string{
+	"users": "/Users",
+	"vol":   "/Volumes",
 }
 
 func main() {
+	cli, err := command.NewDockerCli()
+
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Println(cli)
+
+	ctx := context.Background()
+
 	kernelCommandLineArguments := []string{
 		// Use the first virtio console device as system console.
 		"console=hvc0",
 		"root=/dev/vda",
-		"init=/bin/init",
+		"rootfstype=squashfs",
 	}
 
 	vmlinuz := os.Args[1]
 	diskPath := os.Args[2]
 
 	var bootLoader *vz.LinuxBootLoader
-	var err error
 
 	bootLoader, err = vz.NewLinuxBootLoader(
 		vmlinuz,
@@ -60,8 +59,8 @@ func main() {
 
 	config, err := vz.NewVirtualMachineConfiguration(
 		bootLoader,
-		1,
-		512*1024*1024,
+		uint(runtime.NumCPU()),
+		4096*1024*1024,
 	)
 	if err != nil {
 		log.Fatalf("failed to create virtual machine configuration: %s", err)
@@ -123,8 +122,11 @@ func main() {
 
 	storages := []vz.StorageDeviceConfiguration{rootImage}
 
+	hasDataImage := false
+
 	if len(os.Args) > 3 {
 		dataImagePath := os.Args[3]
+		hasDataImage = true
 
 		dataAttachment, err := vz.NewDiskImageStorageDeviceAttachment(dataImagePath, false)
 
@@ -143,6 +145,34 @@ func main() {
 
 	config.SetStorageDevicesVirtualMachineConfiguration(storages)
 
+	shares := []vz.DirectorySharingDeviceConfiguration{}
+
+	for tag, mountPath := range mountPaths {
+		shareDir, err := vz.NewSharedDirectory(mountPath, false)
+
+		if err != nil {
+			log.Fatalf("failed to create shared directory: %s", err)
+		}
+
+		share, err := vz.NewSingleDirectoryShare(shareDir)
+
+		if err != nil {
+			log.Fatalf("failed to create single directory share: %s", err)
+		}
+
+		fsconf, err := vz.NewVirtioFileSystemDeviceConfiguration(tag)
+
+		if err != nil {
+			log.Fatalf("failed to create file system device configuration: %s", err)
+		}
+
+		fsconf.SetDirectoryShare(share)
+
+		shares = append(shares, fsconf)
+	}
+
+	config.SetDirectorySharingDevicesVirtualMachineConfiguration(shares)
+
 	// traditional memory balloon device which allows for managing guest memory. (optional)
 	memoryBalloonDevice, err := vz.NewVirtioTraditionalMemoryBalloonDeviceConfiguration()
 	if err != nil {
@@ -157,9 +187,11 @@ func main() {
 	if err != nil {
 		log.Fatalf("virtio-vsock device creation failed: %s", err)
 	}
+
 	config.SetSocketDevicesVirtualMachineConfiguration([]vz.SocketDeviceConfiguration{
 		vsockDevice,
 	})
+
 	validated, err := config.Validate()
 	if !validated || err != nil {
 		log.Fatal("validation failed", err)
@@ -177,76 +209,193 @@ func main() {
 		log.Fatalf("Start virtual machine is failed: %s", err)
 	}
 
+	stateCh := vm.StateChangedNotify()
+
+	for {
+		state, ok := <-stateCh
+
+		if !ok {
+			log.Fatalf("state channel closed")
+		}
+
+		log.Println("state:", state)
+
+		if state == vz.VirtualMachineStateRunning {
+			break
+		}
+	}
+
 	socks := vm.SocketDevices()
 
 	if len(socks) == 0 {
 		log.Fatalf("no socket devices found")
 	}
 
-	go func() {
-		sock := socks[0]
+	sock := socks[0]
 
-		listener, err := sock.Listen(1)
+	listener, err := sock.Listen(2)
+
+	if err != nil {
+		log.Fatalf("failed to listen on socket: %s", err)
+	}
+
+	defer listener.Close()
+
+	guestLogs, err := listener.Accept()
+
+	if err != nil {
+		log.Fatalf("failed to accept connection: %s", err)
+	}
+
+	log.Printf("accepted connection from %s to %s", guestLogs.RemoteAddr(), guestLogs.LocalAddr())
+
+	go func() {
+		defer guestLogs.Close()
+
+	}()
+
+	var conn *vz.VirtioSocketConnection
+
+	for {
+		vconn, err := sock.Connect(1)
 
 		if err != nil {
-			log.Fatalf("listen failed: %s", err)
+			log.Printf("failed to connect to socket: %s", err)
+			time.Sleep(1 * time.Second)
+		} else {
+			conn = vconn
+			break
+		}
+	}
+
+	client := vzapi.Client{Conn: conn}
+
+	info, err := client.Info(ctx, vzapi.InfoRequest{ProtocolVersion: 1})
+
+	if err != nil {
+		log.Fatalf("failed to get info: %s", err)
+	}
+
+	log.Printf("info: %v", info)
+
+	for tag, mountPath := range mountPaths {
+		if err := client.Mount(ctx, vzapi.MountRequest{FS: "virtiofs", Device: tag, Target: mountPath}); err != nil {
+			log.Fatalf("failed to mount: %s", err)
+		}
+	}
+
+	if hasDataImage {
+		log.Println("preparing to start docker")
+
+		if err := client.Mount(ctx, vzapi.MountRequest{FS: "ext4", Device: "/dev/vdb", Target: "/var/lib/docker"}); err != nil {
+			log.Fatalf("failed to mount: %s", err)
 		}
 
-		defer listener.Close()
+		err := client.Launch(ctx, vzapi.LaunchRequest{
+			Path: "/usr/bin/dockerd",
+			Env:  []string{"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"},
+		})
 
-		log.Printf("listening on %s", listener.Addr())
+		if err != nil {
+			log.Fatalf("failed to start dockerd: %s", err)
+		}
+
+		log.Println("dockerd started")
+
+		// create ~/.macoby/run on the host
+		home, err := os.UserHomeDir()
+
+		if err != nil {
+			log.Printf("failed to get user home dir: %s", err)
+		}
+
+		runDir := path.Join(home, ".macoby", "run")
+
+		if err := os.MkdirAll(runDir, 0755); err != nil {
+			log.Printf("failed to create run dir: %s", err)
+		}
+
+		// listen on docker.sock
+
+		dockerSock := path.Join(runDir, "docker.sock")
+
+		if err := os.Remove(dockerSock); err != nil && !os.IsNotExist(err) {
+			log.Printf("failed to remove docker.sock: %s", err)
+		}
+
+		l, err := net.Listen("unix", dockerSock)
+
+		if err != nil {
+			log.Printf("failed to listen on docker.sock: %s", err)
+		}
+
+		defer l.Close()
 
 		for {
-			conn, err := listener.Accept()
+			log.Printf("waiting for connection on %s", dockerSock)
+			conn, err := l.Accept()
 
 			if err != nil {
-				log.Fatalf("accept failed: %s", err)
+				log.Printf("failed to accept connection: %s", err)
+				break
 			}
+
+			log.Printf("accepted connection from %s to %s", conn.RemoteAddr(), dockerSock)
 
 			go func() {
 				defer conn.Close()
 
-				buf := make([]byte, 1024)
+				vconn, err := sock.Connect(1)
 
-				for {
-					n, err := conn.Read(buf)
+				defer vconn.Close()
 
-					if err != nil {
-						log.Fatalf("read failed: %s", err)
-					}
+				if err != nil {
+					log.Printf("failed to connect to socket: %s", err)
+				}
 
-					log.Printf("read: %s", string(buf[:n]))
+				client := vzapi.Client{Conn: vconn}
+
+				log.Printf("connecting to docker.sock")
+
+				rconn, err := client.DialContext(ctx, "unix", "/var/run/docker.sock")
+
+				if err != nil {
+					log.Printf("failed to connect to docker.sock: %s", err)
+					return
+				}
+
+				log.Printf("connected to docker.sock")
+
+				defer rconn.Close()
+
+				go func() {
+					io.Copy(rconn, conn)
+				}()
+
+				_, err = io.Copy(conn, rconn)
+
+				if err != nil {
+					log.Printf("failed to copy to client: %s", err)
 				}
 			}()
 		}
 
-	}()
+		signal := <-signalCh
 
-	errCh := make(chan error, 1)
-
-	for {
-		select {
-		case <-signalCh:
-			result, err := vm.RequestStop()
-			if err != nil {
-				log.Println("request stop error:", err)
-				return
-			}
-			log.Println("recieved signal", result)
-		case newState := <-vm.StateChangedNotify():
-			if newState == vz.VirtualMachineStateRunning {
-				log.Println("start VM is running")
-			}
-			if newState == vz.VirtualMachineStateStopped {
-				log.Println("stopped successfully")
-				return
-			}
-		case err := <-errCh:
-			log.Println("in start:", err)
-		}
+		log.Printf("received signal: %v", signal)
 	}
 
-	// if err := vm.Resume(); err != nil {
-	// 	log.Println("in resume:", err)
-	// }
+	for {
+		state, ok := <-stateCh
+
+		if !ok {
+			break
+		}
+
+		log.Println("state:", state)
+
+		if state == vz.VirtualMachineStateStopped {
+			break
+		}
+	}
 }

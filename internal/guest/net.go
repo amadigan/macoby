@@ -1,4 +1,4 @@
-package netconf
+package guest
 
 import (
 	"context"
@@ -11,6 +11,28 @@ import (
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
 )
+
+func InitializeNetwork() error {
+	if err := EnableLoopback(); err != nil {
+		return fmt.Errorf("Failed to bring up loopback: %v", err)
+	}
+
+	ifaces, err := FindConfigurableInterfaces()
+
+	if err != nil {
+		return fmt.Errorf("Unable to fetch configurable interfaces: %v", err)
+	} else if len(ifaces) > 0 {
+		err = ConfigureDevice(context.Background(), &ifaces[0])
+
+		if err != nil {
+			return fmt.Errorf("DHCP error: %v", err)
+		}
+	} else {
+		return fmt.Errorf("No configurable interfaces found")
+	}
+
+	return nil
+}
 
 func SetAddress(iface *net.Interface, addr net.IPNet) error {
 	link, err := netlink.LinkByIndex(iface.Index)
@@ -120,4 +142,14 @@ func ConfigureDevice(ctx context.Context, iface *net.Interface) error {
 	}
 
 	return os.WriteFile("/etc/resolv.conf", []byte(resolvConf), 0644)
+}
+
+func EnableLoopback() error {
+	lo, err := netlink.LinkByName("lo")
+
+	if err != nil {
+		return fmt.Errorf("Failed to fetch loopback device: %v", err)
+	}
+
+	return netlink.LinkSetUp(lo)
 }

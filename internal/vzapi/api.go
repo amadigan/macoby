@@ -3,6 +3,7 @@ package vzapi
 import (
 	"encoding/json"
 	"io"
+	"log"
 	"net"
 )
 
@@ -16,10 +17,7 @@ const (
 	MessageTypeMount
 	MessageTypeWrite
 	MessageTypeExec
-	MessageTypeSignal
-	MessageTypeStdin
-	MessageTypeStdout
-	MessageTypeStderr
+	MessageTypeLaunch
 	MessageTypeConnect
 )
 
@@ -34,10 +32,12 @@ type InfoResponse struct {
 }
 
 type MountRequest struct {
-	FS       string `json:"type"`
-	Device   string `json:"src"`
-	Target   string `json:"dst"`
-	ReadOnly bool   `json:"ro"`
+	FS            string   `json:"type"`
+	Device        string   `json:"src"`
+	Target        string   `json:"dst"`
+	ReadOnly      bool     `json:"ro"`
+	Options       string   `json:"opts"`
+	FormatOptions []string `json:"mkfsargs"`
 }
 
 type WriteRequest struct {
@@ -47,18 +47,10 @@ type WriteRequest struct {
 	Directory bool   `json:"dir"`
 }
 
-type ExecRequest struct {
+type LaunchRequest struct {
 	Path string   `json:"path"`
 	Args []string `json:"args"`
 	Env  []string `json:"env"`
-}
-
-type Process struct {
-	Stdin          io.WriteCloser
-	Stdout         io.ReadCloser
-	Stderr         io.ReadCloser
-	SignalReceiver chan<- int8
-	SignalSender   <-chan int8
 }
 
 type ConnectRequest struct {
@@ -107,11 +99,13 @@ func write(conn net.Conn, buf []byte) error {
 }
 
 func writeMessage(conn net.Conn, typ MessageType, v any) error {
+	log.Printf("Writing message type %d", typ)
 	if _, err := conn.Write([]byte{byte(typ)}); err != nil {
 		return err
 	}
 
 	if v == nil {
+		log.Printf("No data to write")
 		return nil
 	}
 
@@ -120,6 +114,8 @@ func writeMessage(conn net.Conn, typ MessageType, v any) error {
 	if err != nil {
 		return err
 	}
+
+	log.Printf("Writing message: %s", string(buf))
 
 	return write(conn, buf)
 }

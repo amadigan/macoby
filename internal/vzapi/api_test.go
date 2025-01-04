@@ -17,8 +17,8 @@ type mockHandler struct {
 	ShutdownFunc func(context.Context)
 	MountFunc    func(context.Context, MountRequest) error
 	WriteFunc    func(context.Context, WriteRequest) error
-	ExecFunc     func(context.Context, ExecRequest) (*Process, error)
-	ConnectFunc  func(context.Context, ConnectRequest, net.Conn) (net.Conn, error)
+	ConnectFunc  func(context.Context, ConnectRequest) (net.Conn, error)
+	LaunchFunc   func(context.Context, LaunchRequest) error
 }
 
 func (m *mockHandler) Info(ctx context.Context, req InfoRequest) InfoResponse {
@@ -51,20 +51,20 @@ func (m *mockHandler) Write(ctx context.Context, req WriteRequest) error {
 	return nil
 }
 
-func (m *mockHandler) Exec(ctx context.Context, req ExecRequest) (*Process, error) {
-	if m.ExecFunc != nil {
-		return m.ExecFunc(ctx, req)
+func (m *mockHandler) Connect(ctx context.Context, req ConnectRequest) (net.Conn, error) {
+	if m.ConnectFunc != nil {
+		return m.ConnectFunc(ctx, req)
 	}
 
 	return nil, nil
 }
 
-func (m *mockHandler) Connect(ctx context.Context, req ConnectRequest, conn net.Conn) (net.Conn, error) {
-	if m.ConnectFunc != nil {
-		return m.ConnectFunc(ctx, req, conn)
+func (m *mockHandler) Launch(ctx context.Context, req LaunchRequest) error {
+	if m.LaunchFunc != nil {
+		return m.LaunchFunc(ctx, req)
 	}
 
-	return nil, nil
+	return nil
 }
 
 func setup(handler Handler) Client {
@@ -181,6 +181,7 @@ func TestWrite(t *testing.T) {
 	handler := &mockHandler{
 		WriteFunc: func(_ context.Context, req WriteRequest) error {
 			rcChan <- req
+
 			return nil
 		},
 	}
@@ -209,103 +210,6 @@ func TestWrite(t *testing.T) {
 		t.Fatal("timeout")
 	}
 }
-
-func TestExec(t *testing.T) {
-	t.Parallel()
-
-	rcChan := make(chan ExecRequest, 1)
-
-	defer close(rcChan)
-
-	sigOut := make(chan int8, 1)
-	sigIn := make(chan int8, 1)
-
-	go func() {
-		sig := <-sigIn
-
-		assert.Equal(t, int8(1), sig)
-
-		sigOut <- sig
-	}()
-
-	process := &Process{
-		Stdin:          &mockStream{Buffer: &bytes.Buffer{}},
-		Stdout:         &mockStream{Buffer: bytes.NewBufferString("stdout")},
-		Stderr:         &mockStream{Buffer: bytes.NewBufferString("stderr")},
-		SignalReceiver: sigIn,
-		SignalSender:   sigOut,
-	}
-
-	handler := &mockHandler{
-		ExecFunc: func(_ context.Context, req ExecRequest) (*Process, error) {
-			rcChan <- req
-
-			return process, nil
-		},
-	}
-
-	c := setup(handler)
-
-	req := ExecRequest{
-		Path: "/bin/echo",
-		Args: []string{"hello", "world"},
-		Env:  []string{"LANG=en_US.UTF-8"},
-	}
-
-	rp, err := c.Exec(context.Background(), req)
-
-	assert.NoError(t, err)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
-
-	defer cancel()
-
-	var got ExecRequest
-
-	select {
-	case got = <-rcChan:
-	case <-ctx.Done():
-		t.Fatal("timeout")
-	}
-
-	_, err = io.WriteString(rp.Stdin, "stdin")
-
-	assert.Equal(t, req, got)
-
-	outCh := make(chan []byte)
-	errCh := make(chan []byte)
-
-	go func() {
-		defer close(outCh)
-		bs, err := io.ReadAll(rp.Stdout)
-
-		assert.NoError(t, err)
-
-		outCh <- bs
-	}()
-
-	go func() {
-		defer close(errCh)
-		bs, err := io.ReadAll(rp.Stderr)
-
-		assert.NoError(t, err)
-
-		errCh <- bs
-	}()
-
-	out := <-outCh
-	assert.Equal(t, "stdout", string(out))
-
-	out = <-errCh
-	assert.Equal(t, "stderr", string(out))
-
-	rp.SignalSender <- 1
-
-	signal := <-rp.SignalReceiver
-
-	assert.Equal(t, int8(1), signal)
-}
-
 func TestConnect(t *testing.T) {
 	t.Parallel()
 
@@ -332,7 +236,7 @@ func TestConnect(t *testing.T) {
 	defer server.Close()
 
 	handler := &mockHandler{
-		ConnectFunc: func(_ context.Context, req ConnectRequest, conn net.Conn) (net.Conn, error) {
+		ConnectFunc: func(_ context.Context, req ConnectRequest) (net.Conn, error) {
 			rcChan <- req
 			left, right := net.Pipe()
 			listener.connCh <- right
@@ -355,6 +259,10 @@ func TestConnect(t *testing.T) {
 	assert.Equal(t, "hello, world", string(bs))
 	assert.NoError(t, resp.Body.Close())
 	assert.Equal(t, "text/plain", resp.Header.Get("Content-Type"))
+
+	req := <-rcChan
+
+	assert.Equal(t, ConnectRequest{Network: "tcp", Address: "localhost:80"}, req)
 }
 
 type mockStream struct {

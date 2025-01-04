@@ -13,8 +13,8 @@ type Handler interface {
 	Shutdown(context.Context)
 	Mount(context.Context, MountRequest) error
 	Write(context.Context, WriteRequest) error
-	Exec(context.Context, ExecRequest) (*Process, error)
-	Connect(context.Context, ConnectRequest, net.Conn) (net.Conn, error)
+	Launch(context.Context, LaunchRequest) error
+	Connect(context.Context, ConnectRequest) (net.Conn, error)
 }
 
 type handler func(context.Context, net.Conn, Handler) error
@@ -97,138 +97,26 @@ func handleWrite(ctx context.Context, conn net.Conn, h Handler) error {
 	return writeError(conn, err)
 }
 
-func handleExec(ctx context.Context, conn net.Conn, h Handler) error {
+func handleLaunch(ctx context.Context, conn net.Conn, h Handler) error {
 	buf, err := read(conn)
 
 	if err != nil {
 		return err
 	}
 
-	var req ExecRequest
+	var req LaunchRequest
 
 	if err := json.Unmarshal(buf, &req); err != nil {
 		return err
 	}
 
-	process, err := h.Exec(ctx, req)
+	err = h.Launch(ctx, req)
 
-	if wrErr := writeError(conn, err); wrErr != nil {
-		return wrErr
-	}
-
-	if err != nil {
-		return nil
-	}
-
-	go handleProcessInput(conn, process)
-
-	handleProcessOutput(conn, process)
-
-	return nil
-}
-
-func handleProcessInput(conn net.Conn, process *Process) {
-	buf := make([]byte, 1)
-
-	defer process.Stdin.Close()
-
-	for {
-		if _, err := conn.Read(buf); err != nil {
-			break
-		}
-
-		typ := MessageType(buf[0])
-
-		if typ == MessageTypeSignal {
-			if _, err := conn.Read(buf); err != nil {
-				break
-			}
-
-			signal := int8(buf[0])
-
-			process.SignalReceiver <- signal
-		} else if typ == MessageTypeStdin {
-			bs, err := read(conn)
-
-			if err != nil {
-				break
-			}
-
-			if _, err := process.Stdin.Write(bs); err != nil {
-				break
-			}
-		}
-	}
-}
-
-func handleProcessOutput(conn net.Conn, process *Process) {
-	stdoutCh := make(chan []byte, 1)
-	stderrCh := make(chan []byte, 1)
-
-	go proxyOutput(process.Stdout, stdoutCh, "stdout")
-	go proxyOutput(process.Stderr, stderrCh, "stderr")
-
-	defer close(stdoutCh)
-	defer close(stderrCh)
-
-	for {
-		select {
-		case bs := <-stdoutCh:
-			log.Printf("writing stdout, len %d", len(bs))
-			if _, err := conn.Write([]byte{byte(MessageTypeStdout)}); err != nil {
-				return
-			}
-
-			if err := write(conn, bs); err != nil {
-				return
-			}
-			log.Printf("wrote stdout")
-		case bs := <-stderrCh:
-			log.Printf("writing stderr, len %d", len(bs))
-			if _, err := conn.Write([]byte{byte(MessageTypeStderr)}); err != nil {
-				return
-			}
-
-			if err := write(conn, bs); err != nil {
-				return
-			}
-			log.Printf("wrote stderr")
-		case signal, ok := <-process.SignalSender:
-			if !ok {
-				return
-			}
-			log.Printf("writing signal")
-			if _, err := conn.Write([]byte{byte(MessageTypeSignal), byte(signal)}); err != nil {
-				return
-			}
-			log.Printf("wrote signal")
-		}
-	}
-}
-
-func proxyOutput(reader io.ReadCloser, outCh chan<- []byte, name string) {
-	buf := make([]byte, 4096)
-
-	for {
-		n, err := reader.Read(buf)
-
-		if err != nil {
-			break
-		}
-
-		if n == 0 {
-			panic("read 0 bytes")
-		}
-
-		log.Printf("read %d bytes", n)
-		outCh <- buf[:n]
-	}
-
-	log.Printf("closing output channel: %s", name)
-	outCh <- []byte{}
+	return writeError(conn, err)
 }
 
 func handleConnect(ctx context.Context, conn net.Conn, h Handler) error {
+	log.Printf("connect request")
 	buf, err := read(conn)
 
 	if err != nil {
@@ -241,9 +129,12 @@ func handleConnect(ctx context.Context, conn net.Conn, h Handler) error {
 		return err
 	}
 
-	remote, err := h.Connect(ctx, req, conn)
+	log.Printf("connect request: %v", req)
+
+	remote, err := h.Connect(ctx, req)
 
 	if err != nil {
+		log.Printf("error connecting: %v", err)
 		writeError(conn, err)
 
 		return nil
@@ -251,16 +142,19 @@ func handleConnect(ctx context.Context, conn net.Conn, h Handler) error {
 
 	defer remote.Close()
 
-	done := make(chan struct{})
+	write(conn, []byte{})
 
 	go func() {
-		write(conn, nil)
-		io.Copy(conn, remote)
-		close(done)
+		io.Copy(remote, conn)
 	}()
 
-	io.Copy(remote, conn)
-	<-done
+	_, err = io.Copy(conn, remote)
+
+	if err != nil {
+		log.Printf("error copying from remote to local: %v", err)
+	}
+
+	log.Printf("remote output closed")
 
 	return nil
 }
@@ -271,6 +165,8 @@ func Handle(ctx context.Context, conn net.Conn, h Handler) {
 	defer conn.Close()
 
 	for {
+		log.Printf("waiting for message")
+
 		if _, err := conn.Read(buf); err != nil {
 			break
 		}
@@ -289,9 +185,8 @@ func Handle(ctx context.Context, conn net.Conn, h Handler) {
 			handler = handleMount
 		case MessageTypeWrite:
 			handler = handleWrite
-		case MessageTypeExec:
-			handler = handleExec
-			term = true
+		case MessageTypeLaunch:
+			handler = handleLaunch
 		case MessageTypeConnect:
 			handler = handleConnect
 			term = true
@@ -308,4 +203,6 @@ func Handle(ctx context.Context, conn net.Conn, h Handler) {
 			break
 		}
 	}
+
+	log.Printf("connection closed")
 }
