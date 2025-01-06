@@ -3,10 +3,10 @@ WORKDIR /build
 ADD https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git#v6.12.8 .
 RUN apk update && apk add alpine-sdk sudo build-base autoconf automake libtool bison tar flex xz \
       elfutils-dev patch diffutils findutils lz4 ncurses-dev
-COPY Kconfig-base .config
+# COPY Kconfig-base .config
 
 FROM kernel-config AS kernel-build
-RUN make olddefconfig && make -j $(nproc) -l $(nproc)
+# RUN make olddefconfig && make -j $(nproc) -l $(nproc)
 COPY Kconfig .config
 RUN make olddefconfig && make -j $(nproc) -l $(nproc)
 
@@ -24,6 +24,8 @@ ARG LD_FLAGS=""
 RUN go build -ldflags "${LD_FLAGS}" -o ./init ./internal/guest/init
 
 FROM alpine:edge AS sysroot
-RUN apk add --no-cache docker-engine e2fsprogs btrfs-progs
+# git and openssh-client are used by dockerd
+RUN apk add --no-cache docker-engine e2fsprogs btrfs-progs git openssh-client
+RUN rm /sbin/init
 COPY --from=build /build/init /sbin/init
 

@@ -1,25 +1,30 @@
-// boxpark with btrfs compression
+// railyard with compressed btrfs and ext4 volumes
 {
 	"ram": 4096, // in MB, default 25% of total system memory
 	"cpu": 2, // number of CPUs, default all available
 	"disks": {
-		// btrfs for images/layers with zstd compression to save space
-		"/var/lib/docker" : {
+		"docker": {
+			"mount": "/var/lib/docker",
 			"size": "20G",
 			"fs": "btrfs",
-			"formatOptions": [
+			"mkfs": [
 				"--mixed",
-				"--compress", "zstd:12",
 				"--metadata", "single",
 				"--data", "single",
 				"--label", "docker"
+			],
+			"options": [
+				"defaults",
+				"noatime",
+				"nodiratime",
+				"compress=zstd:12",
 			]
 		},
-		// write-heavy operations like volumes can use ext4 (optional)
-		"/var/lib/docker/volumes": {
+		"volumes": {
+			"mount": "/var/lib/docker/volumes",
 			"size": "40G",
 			"fs": "ext4",
-			"formatOptions": [
+			"mkfs": [
 				"-m", "0",
 				"-b", "4096",
 				"-i", "1048576",
@@ -27,7 +32,6 @@
 				"-O", "uninit_bg",
 				// allow online resize up to 2TB
 				"-E", "lazy_itable_init=1,lazy_journal_init=1,resize=524288000",
-				"-L", "vols",
 				"-F"
 			]
 		}
@@ -36,20 +40,27 @@
 		"/Users": "/Users",
 		"/Volumes": "ro:/Volumes"
 	},
-	"sockets": {
-		"/var/run/docker.sock": "/var/run/docker.sock",
-		"tcp:127.0.0.1:2375": "tcp:0.0.0.0:2375"
+	"docker-socket": {
+		"host": "run/docker.sock",
+		"container": "/run/docker.sock"
 	},
-	"dockerd": { // dockerd configuration
-		"debug": true,
+	"control": "run/vz.sock",
+	"logs": {
+		"dir": "logs",
+		"max-size": "10M",
+		"max-backups": 3,
+		"max-age": 7
 	},
-	"hostIface": "127.0.0.1", // or the name of the host interface to publish on e.g. en0
+	"json-conf": {
+		"/etc/docker/daemon.json": {
+			"storage-driver": "btrfs",
+		}
+	},
+	"host-iface": "127.0.0.1", // or the name of the host interface to publish on e.g. en0
 	"sysctl": {
 		"net.ipv4.ip_forward": "1",
 		"net.ipv6.conf.all.forwarding": "1",
 		"net.ipv4.tcp_fin_timeout": "15",
-		"net.ipv4.tcp_tw_recycle": "1",
-		"net.ipv4.tcp_tw_reuse": "1",
 		"fs.file-max": "2097152",
 		"fs.inotify.max_user_watches": "524288",
 		"kernel.pid_max": "4194303",

@@ -1,8 +1,8 @@
-package log
+package applog
 
 import (
 	"fmt"
-	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -19,6 +19,8 @@ const (
 
 var logLevelNames = []string{"OFF", "DEBUG", "INFO", "WARN", "ERROR", "FATAL"}
 
+var minLogLevel atomic.Int32
+
 func (l LogLevel) String() string {
 	if l < LogLevelOff || l > LogLevelFatal {
 		return ""
@@ -31,21 +33,13 @@ type Logger struct {
 	pkg string
 }
 
-type LogHandler interface {
-	Log(LogLevel, time.Time, string, string, ...any)
-}
-
-type DefaultLogHandler struct {
-	level LogLevel
-}
-
-func (h *DefaultLogHandler) Log(level LogLevel, when time.Time, pkg string, msg string, args ...any) {
-	if level < h.level {
+func Log(level LogLevel, when time.Time, pkg string, msg string, args ...any) {
+	if minLogLevel.Load() > int32(level) {
 		return
 	}
 
 	nargs := make([]any, 3, len(args)+3)
-	nargs[0] = when.Format(time.RFC3339)
+	nargs[0] = when.UTC().Format(time.RFC3339)
 	nargs[1] = level.String()
 	nargs[2] = pkg
 
@@ -54,24 +48,8 @@ func (h *DefaultLogHandler) Log(level LogLevel, when time.Time, pkg string, msg 
 	fmt.Printf("%s [%s] %s "+msg+"\n", nargs...)
 }
 
-var logHandler LogHandler = &DefaultLogHandler{}
-var logMutex sync.RWMutex
-
-func SetLogHandler(h LogHandler) {
-	logMutex.Lock()
-	defer logMutex.Unlock()
-	logHandler = h
-}
-
 func New(pkg string) *Logger {
 	return &Logger{pkg: pkg}
-}
-
-func Log(level LogLevel, when time.Time, pkg string, msg string, args ...any) {
-	logMutex.RLock()
-	defer logMutex.RUnlock()
-
-	logHandler.Log(level, when, pkg, msg, args...)
 }
 
 func (l *Logger) Debug(msg string) {
@@ -106,10 +84,12 @@ func (l *Logger) Errorf(msg string, args ...any) {
 	Log(LogLevelError, time.Now(), l.pkg, msg, args...)
 }
 
-func (l *Logger) Fatal(msg string) {
-	Log(LogLevelFatal, time.Now(), l.pkg, "%s", msg)
+func (l *Logger) Fatal(err error) {
+	Log(LogLevelFatal, time.Now(), l.pkg, "%v", err)
+	panic(err)
 }
 
 func (l *Logger) Fatalf(msg string, args ...any) {
 	Log(LogLevelFatal, time.Now(), l.pkg, msg, args...)
+	panic(fmt.Sprintf(msg, args...))
 }

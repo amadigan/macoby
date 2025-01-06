@@ -3,10 +3,11 @@
 	"ram": 4096, // in MB, default 25% of total system memory
 	"cpu": 2, // number of CPUs, default all available
 	"disks": {
-		"/var/lib/docker": {
+		"docker": {
+			"mount": "/var/lib/docker",
 			"size": "40G",
 			"fs": "ext4",
-			"formatOptions": [
+			"mkfs": [
 				"-m", "0",
 				"-b", "4096",
 				"-i", "1048576",
@@ -14,7 +15,6 @@
 				"-O", "uninit_bg",
 				// allow online resize up to 2TB
 				"-E", "lazy_itable_init=1,lazy_journal_init=1,resize=524288000",
-				"-L", "docker",
 				"-F"
 			]
 		}
@@ -23,29 +23,25 @@
 		"/Users": "/Users",
 		"/Volumes": "ro:/Volumes"
 	},
-	"dockerSocket": {
-		"host": "{BOXPARK_HOME}/run/docker.sock",
+	"docker-socket": {
+		"host": "run/docker.sock",
 		"container": "/run/docker.sock"
 	},
-	"vzsocket": "{BOXPARK_HOME}/run/vz.sock",
+	"control": "run/vz.sock",
 	"logs": {
-		"dir": "{BOXPARK_HOME}/logs",
+		"dir": "logs",
 		"max-size": "10M",
 		"max-backups": 3,
 		"max-age": 7
 	},
 	"json-conf": {
-		"/etc/docker/daemon.json": {
-			"debug": true,
-		},
+		"/etc/docker/daemon.json": {}
 	},
 	"host-iface": "127.0.0.1", // or the name of the host interface to publish on e.g. en0
 	"sysctl": {
 		"net.ipv4.ip_forward": "1",
 		"net.ipv6.conf.all.forwarding": "1",
 		"net.ipv4.tcp_fin_timeout": "15",
-		"net.ipv4.tcp_tw_recycle": "1",
-		"net.ipv4.tcp_tw_reuse": "1",
 		"fs.file-max": "2097152",
 		"fs.inotify.max_user_watches": "524288",
 		"kernel.pid_max": "4194303",

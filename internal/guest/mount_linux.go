@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"context"
 	"fmt"
-	"log"
 	"os"
 	"os/exec"
 	"strings"
@@ -145,7 +144,7 @@ func mkswap(device string, options []string) error {
 	return nil
 }
 
-func MountTmp(device string, mountpoint string, size int64) error {
+func MountTmp(device string, mountpoint string, size uint64) error {
 	if err := unix.Mount(device, mountpoint, "tmpfs", unix.MS_NOEXEC|unix.MS_NOSYMFOLLOW|unix.MS_NOATIME, fmt.Sprintf("uid=0,gid=0,mode=0755,size=%d", size)); err != nil {
 		return fmt.Errorf("Failed to mount %s tmpfs on %s: %v", device, mountpoint, err)
 	}
@@ -203,7 +202,7 @@ func MountCgroup() error {
 	return nil
 }
 
-func OverlayRoot(size int64) error {
+func OverlayRoot(size uint64) error {
 	if err := MountTmp("tmpfs", "/mnt", size); err != nil {
 		return fmt.Errorf("Failed to mount tmpfs: %w", err)
 	}

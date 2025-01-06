@@ -3,7 +3,6 @@ package guest
 import (
 	"context"
 	"fmt"
-	"log"
 	"net"
 	"os"
 
@@ -12,26 +11,28 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-func InitializeNetwork() error {
+func InitializeNetwork() (net.IP, net.IP, error) {
 	if err := EnableLoopback(); err != nil {
-		return fmt.Errorf("Failed to bring up loopback: %v", err)
+		return nil, nil, fmt.Errorf("Failed to bring up loopback: %v", err)
 	}
 
 	ifaces, err := FindConfigurableInterfaces()
 
 	if err != nil {
-		return fmt.Errorf("Unable to fetch configurable interfaces: %v", err)
-	} else if len(ifaces) > 0 {
-		err = ConfigureDevice(context.Background(), &ifaces[0])
-
-		if err != nil {
-			return fmt.Errorf("DHCP error: %v", err)
-		}
-	} else {
-		return fmt.Errorf("No configurable interfaces found")
+		return nil, nil, fmt.Errorf("Unable to fetch configurable interfaces: %v", err)
 	}
 
-	return nil
+	if len(ifaces) > 0 {
+		v4, v6, err := ConfigureDevice(context.Background(), &ifaces[0])
+
+		if err != nil {
+			return nil, nil, fmt.Errorf("DHCP error: %v", err)
+		}
+
+		return v4, v6, nil
+	}
+
+	return nil, nil, fmt.Errorf("No configurable interfaces found")
 }
 
 func SetAddress(iface *net.Interface, addr net.IPNet) error {
@@ -79,31 +80,31 @@ func FindConfigurableInterfaces() ([]net.Interface, error) {
 	return rv, nil
 }
 
-func ConfigureDevice(ctx context.Context, iface *net.Interface) error {
+func ConfigureDevice(ctx context.Context, iface *net.Interface) (net.IP, net.IP, error) {
 	link, err := netlink.LinkByIndex(iface.Index)
 
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
 
 	if link.Attrs().OperState == netlink.OperDown {
 		err = netlink.LinkSetUp(link)
 
 		if err != nil {
-			return err
+			return nil, nil, err
 		}
 	}
 
 	client, err := nclient4.New(iface.Name)
 
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
 
 	lease, err := client.Request(ctx)
 
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
 
 	addr := net.IPNet{
@@ -111,10 +112,10 @@ func ConfigureDevice(ctx context.Context, iface *net.Interface) error {
 		Mask: lease.Offer.SubnetMask(),
 	}
 
-	log.Printf("Setting address %s on %s", addr.String(), iface.Name)
+	log.Infof("Setting address %s on %s", addr.String(), iface.Name)
 
 	if err = SetAddress(iface, addr); err != nil {
-		return err
+		return nil, nil, fmt.Errorf("Error setting address: %v", err)
 	}
 
 	gateway := lease.Offer.GatewayIPAddr
@@ -131,7 +132,7 @@ func ConfigureDevice(ctx context.Context, iface *net.Interface) error {
 	})
 
 	if err != nil {
-		return fmt.Errorf("Error setting route: %v", err)
+		return nil, nil, fmt.Errorf("Error setting route: %v", err)
 	}
 
 	resolvConf := ""
@@ -141,7 +142,7 @@ func ConfigureDevice(ctx context.Context, iface *net.Interface) error {
 		resolvConf = resolvConf + fmt.Sprintf("nameserver %s\n", resolver.String())
 	}
 
-	return os.WriteFile("/etc/resolv.conf", []byte(resolvConf), 0644)
+	return addr.IP, nil, os.WriteFile("/etc/resolv.conf", []byte(resolvConf), 0644)
 }
 
 func EnableLoopback() error {

@@ -1,7 +1,6 @@
 package guest
 
 import (
-	"log"
 	"os"
 	"time"
 
@@ -12,7 +11,7 @@ func StartClockSync(interval time.Duration, stop <-chan struct{}) {
 	f, err := os.OpenFile("/dev/rtc0", os.O_RDWR, 0)
 
 	if err != nil {
-		log.Printf("Failed to open /dev/rtc0: %v", err)
+		log.Errorf("Failed to open /dev/rtc0: %v", err)
 
 		return
 	}
@@ -25,7 +24,7 @@ func StartClockSync(interval time.Duration, stop <-chan struct{}) {
 		now := time.Now()
 
 		if err != nil {
-			log.Printf("Failed to get RTC time: %v", err)
+			log.Errorf("Failed to get RTC time: %v", err)
 
 			return
 		}
@@ -43,15 +42,15 @@ func StartClockSync(interval time.Duration, stop <-chan struct{}) {
 
 		if rtcTime.Sub(now).Abs() >= 2*time.Second {
 			if err := unix.Settimeofday(&tv); err != nil {
-				log.Printf("Failed to set time: %v", err)
+				log.Errorf("Failed to set time: %v", err)
 			} else {
-				log.Printf("Time set to %v, was %v", tv, now)
+				log.Errorf("Time set to %v, was %v", tv, now)
 			}
 		}
 
 		elapsed := time.Since(start)
 
-		log.Printf("RTC time: %v, elapsed: %v", rtcTime, elapsed)
+		log.Errorf("RTC time: %v, elapsed: %v", rtcTime, elapsed)
 
 		select {
 		case <-time.After(interval):

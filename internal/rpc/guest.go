@@ -2,10 +2,13 @@ package rpc
 
 import (
 	"io"
+	"net"
 	"net/rpc"
 )
 
 type Guest interface {
+	// Init... initialize the guest
+	Init(InitRequest, *InitResponse) error
 	// Write... overwrite/create a file
 	Write(WriteRequest, *struct{}) error
 	// Mkdir... create a directory, including parents
@@ -18,14 +21,22 @@ type Guest interface {
 	Launch(Command, *int64) error
 	// Listen... listen on a network address
 	Listen(ListenRequest, *struct{}) error
-	// Sysctl... set sysctl values
-	Sysctl(map[string]string, *struct{}) error
 	// Signal... send a signal to a process
 	Signal(SignalRequest, *struct{}) error
 	// Metrics... get system metrics
 	Metrics([]string, *Metrics) error
 	// Shutdown... initiate shutdown
 	Shutdown(struct{}, *struct{}) error
+}
+
+type InitRequest struct {
+	OverlaySize uint64
+	Sysctl      map[string]string
+}
+
+type InitResponse struct {
+	IPv4 net.IP
+	IPv6 net.IP
 }
 
 type SignalRequest struct {
@@ -46,7 +57,7 @@ type MountRequest struct {
 }
 
 type Command struct {
-	Name  string
+	Name  string // only applies to Launch, identifies the service in the event log
 	Path  string
 	Dir   string
 	Args  []string
@@ -80,7 +91,6 @@ type DiskMetrics struct {
 type ListenRequest struct {
 	Network string
 	Address string
-	MsgSize int // for "udp" and "unixgram" networks
 }
 
 // The guest API only runs on one connection per VM
@@ -102,6 +112,10 @@ type GuestClient struct {
 
 func NewGuestClient(c *rpc.Client) Guest {
 	return &GuestClient{c}
+}
+
+func (c *GuestClient) Init(req InitRequest, out *InitResponse) error {
+	return c.Call("Guest.Init", req, out)
 }
 
 func (c *GuestClient) Write(req WriteRequest, _ *struct{}) error {
@@ -126,10 +140,6 @@ func (c *GuestClient) Launch(req Command, out *int64) error {
 
 func (c *GuestClient) Listen(req ListenRequest, _ *struct{}) error {
 	return c.Call("Guest.Listen", req, nil)
-}
-
-func (c *GuestClient) Sysctl(req map[string]string, _ *struct{}) error {
-	return c.Call("Guest.Sysctl", req, nil)
 }
 
 func (c *GuestClient) Shutdown(_ struct{}, _ *struct{}) error {

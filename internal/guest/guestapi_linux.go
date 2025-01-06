@@ -2,85 +2,119 @@ package guest
 
 import (
 	"context"
-	"encoding/base64"
-	"errors"
-	"log"
-	"net"
+	"fmt"
+	"io"
+	golog "log"
 	"os"
-	"os/exec"
+	"path/filepath"
+	"strconv"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
-	"github.com/amadigan/macoby/internal/vzapi"
+	"github.com/amadigan/macoby/internal/applog"
+	"github.com/amadigan/macoby/internal/rpc"
 	"github.com/mdlayher/vsock"
 	"golang.org/x/sys/unix"
 )
 
-const ProtocolVersion = 1
+var _ rpc.Guest = &Guest{}
 
-type Guest struct {
-	processeses map[int]*os.Process
-	listener    *vsock.Listener
+func StartGuest() error {
+	bufsize := 32
 
-	mutex sync.Mutex
-}
+	if envsize := os.Getenv("EVENT_BUFFER_SIZE"); envsize != "" {
+		sz, err := strconv.Atoi(envsize)
 
-var _ vzapi.Handler = &Guest{}
+		if err != nil {
+			log.Warnf("Invalid EVENT_BUFFER_SIZE %s: %v", envsize, err)
+		}
 
-func (g *Guest) Start(ctx context.Context) error {
-	listener, err := vsock.ListenContextID(3, 1, nil)
+		bufsize = sz
+	}
+
+	// start the proxy server on port 2
+	proxyListener, err := vsock.ListenContextID(3, 2, nil)
 
 	if err != nil {
 		return err
 	}
 
-	g.mutex.Lock()
-	g.listener = listener
-	g.mutex.Unlock()
+	go applog.FanOut(proxyListener.Accept, rpc.ServeStreamProxy, log)
 
-	for {
-		log.Printf("Waiting for vsock API connection")
-		conn, err := listener.Accept()
+	// bind port 1 for the guest API
+	apiListener, err := vsock.ListenContextID(3, 1, nil)
 
-		log.Printf("Accepted vsock API connection")
-
-		if err != nil {
-			if errors.Is(err, net.ErrClosed) {
-				break
-			}
-
-			return err
-		}
-
-		go vzapi.Handle(ctx, conn, g)
-	}
-
-	return nil
-}
-
-func (g *Guest) Stop(ctx context.Context) error {
-	g.mutex.Lock()
-	defer g.mutex.Unlock()
-
-	if g.listener == nil {
-		return nil
-	}
-
-	if err := g.listener.Close(); err != nil {
+	if err != nil {
 		return err
 	}
 
-	g.listener = nil
+	defer apiListener.Close()
+
+	// start the event emitter, this notifies the host the guest has started
+	eventConn, err := vsock.Dial(2, 1, nil)
+
+	if err != nil {
+		return err
+	}
+
+	emitter := rpc.NewEmitter(eventConn, bufsize)
+
+	// send logs to the event emitter
+	golog.SetOutput(io.MultiWriter(rpc.NewEmitterWriter(emitter, "guest", rpc.LogInternal), os.Stderr))
+
+	g := &Guest{emitter: emitter, processeses: map[int]*os.Process{}}
+
+	log.Info("guest started")
+
+	// wait for the host to connect
+	conn, err := apiListener.Accept()
+
+	if err != nil {
+		return err
+	}
+
+	defer conn.Close()
+
+	// subsequent requests go to the DatagramProxy
+	go applog.FanOut(apiListener.Accept, rpc.ServeDatagramProxy, log)
+
+	// handle the host RPC calls
+	rpc.ServeGuestAPI(g, conn)
 
 	return nil
 }
 
-func (g *Guest) Info(_ context.Context, _ vzapi.InfoRequest) vzapi.InfoResponse {
-	return vzapi.InfoResponse{
-		ProtocolVersion: ProtocolVersion,
+func (g *Guest) Init(req rpc.InitRequest, out *rpc.InitResponse) error {
+	if err := OverlayRoot(req.OverlaySize); err != nil {
+		return err
 	}
+
+	if err := MountProc(); err != nil {
+		return err
+	}
+
+	if err := MountSys(); err != nil {
+		return err
+	}
+
+	if err := MountCgroup(); err != nil {
+		return err
+	}
+
+	go StartClockSync(10*time.Second, make(chan struct{}))
+
+	if ipv4, ipv6, err := InitializeNetwork(); err == nil {
+		*out = rpc.InitResponse{IPv4: ipv4, IPv6: ipv6}
+	} else {
+		return err
+	}
+
+	if err := sysctl(req.Sysctl); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func stopAllProcesses(ctx context.Context, procs map[int]*os.Process) {
@@ -107,9 +141,11 @@ func stopAllProcesses(ctx context.Context, procs map[int]*os.Process) {
 	}
 }
 
-func (g *Guest) Shutdown(ctx context.Context) {
+func (g *Guest) Shutdown(struct{}, *struct{}) error {
 	g.mutex.Lock()
 	defer g.mutex.Unlock()
+
+	ctx := context.Background()
 
 	sctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 
@@ -126,96 +162,112 @@ func (g *Guest) Shutdown(ctx context.Context) {
 	if err := syscall.Reboot(syscall.LINUX_REBOOT_CMD_POWER_OFF); err != nil {
 		panic(err)
 	}
+
+	return nil
 }
 
-func (g *Guest) Mount(ctx context.Context, req vzapi.MountRequest) error {
+func (g *Guest) Mount(req rpc.MountRequest, _ *struct{}) error {
+	var fsOpts []string = make([]string, 0, len(req.Flags))
 	var flags uintptr
 
-	device := req.Device
-
-	if req.ReadOnly {
-		flags |= unix.MS_RDONLY
+	for _, opt := range req.Flags {
+		switch opt {
+		case "ro":
+			flags |= unix.MS_RDONLY
+		case "rw":
+			flags &^= unix.MS_RDONLY
+		case "noatime":
+			flags |= unix.MS_NOATIME
+		case "nodev":
+			flags |= unix.MS_NODEV
+		case "nosuid":
+			flags |= unix.MS_NOSUID
+		case "bind":
+			flags |= unix.MS_BIND
+		case "remount":
+			flags |= unix.MS_REMOUNT
+		case "recursive":
+			flags |= unix.MS_REC
+		case "shared":
+			flags |= unix.MS_SHARED
+		case "slave":
+			flags |= unix.MS_SLAVE
+		case "private":
+			flags |= unix.MS_PRIVATE
+		case "unbindable":
+			flags |= unix.MS_UNBINDABLE
+		case "move":
+			flags |= unix.MS_MOVE
+		case "dirsync":
+			flags |= unix.MS_DIRSYNC
+		case "noexec":
+			flags |= unix.MS_NOEXEC
+		case "synchronous":
+			flags |= unix.MS_SYNCHRONOUS
+		case "lazytime":
+			flags |= unix.MS_LAZYTIME
+		case "mand":
+			flags |= unix.MS_MANDLOCK
+		case "relatime":
+			flags |= unix.MS_RELATIME
+		case "strictatime":
+			flags |= unix.MS_STRICTATIME
+		case "silent":
+			flags |= unix.MS_SILENT
+		default:
+			fsOpts = append(fsOpts, opt)
+		}
 	}
 
 	if err := os.MkdirAll(req.Target, 0755); err != nil {
 		return err
 	}
 
-	log.Printf("Mounting %s on %s with flags %x", device, req.Target, flags)
+	log.Infof("Mounting %s on %s with flags %x", req.Device, req.Target, flags)
 
-	if err := unix.Mount(device, req.Target, req.FS, flags, req.Options); err != nil {
+	if err := unix.Mount(req.Device, req.Target, req.FS, flags, strings.Join(fsOpts, ",")); err != nil {
 		return err
 	}
 
 	return nil
 }
 
-func (g *Guest) Write(ctx context.Context, req vzapi.WriteRequest) error {
-	if req.Directory {
-		if err := os.MkdirAll(req.Path, 0755); err != nil {
-			return err
+func sysctl(req map[string]string) error {
+	for key, val := range req {
+		chars := []byte(key)
+
+		hasDot := false
+
+		for i, c := range chars {
+			if c == '.' {
+				hasDot = true
+				chars[i] = '/'
+			} else if c == '/' {
+				if hasDot {
+					chars[i] = '.'
+				} else {
+					break
+				}
+			}
 		}
 
-		return nil
-	}
+		path := filepath.Clean("/proc/sys/" + string(chars))
 
-	data := req.Data
-
-	if req.Base64 {
-		data = make([]byte, 0, len(req.Data))
-
-		if _, err := base64.StdEncoding.Decode(data, req.Data); err != nil {
-			return err
+		if !strings.HasPrefix(path, "/proc/sys/") {
+			return fmt.Errorf("Invalid sysctl key: %s", key)
 		}
-	}
 
-	// get directory of path
-	dir := req.Path
-
-	if idx := strings.LastIndexByte(req.Path, '/'); idx != -1 {
-		dir = req.Path[:idx]
-	}
-
-	if dir != "" {
-		if err := os.MkdirAll(dir, 0755); err != nil {
-			return err
+		if err := os.WriteFile(path, []byte(val), 0644); err != nil {
+			return fmt.Errorf("Failed to write %s: %v", key, err)
 		}
-	}
-
-	if err := os.WriteFile(req.Path, data, 0644); err != nil {
-		return err
 	}
 
 	return nil
 }
 
-func (g *Guest) Connect(ctx context.Context, req vzapi.ConnectRequest) (net.Conn, error) {
-	log.Printf("Connecting to %s://%s", req.Network, req.Address)
-	return net.Dial(req.Network, req.Address)
-}
+func (g *Guest) Metrics(req []string, out *rpc.Metrics) error {
 
-func (g *Guest) Launch(ctx context.Context, req vzapi.LaunchRequest) error {
-	cmd := exec.Command(req.Path)
-
-	cmd.Args = req.Args
-	cmd.Env = req.Env
-
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-
-	if err := cmd.Start(); err != nil {
-		return err
-	}
-
-	g.mutex.Lock()
-	defer g.mutex.Unlock()
-
-	if g.processeses == nil {
-		g.processeses = make(map[int]*os.Process)
-	}
-
-	g.processeses[cmd.Process.Pid] = cmd.Process
+	*out = rpc.Metrics{}
 
 	return nil
 }
