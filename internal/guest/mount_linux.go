@@ -2,10 +2,8 @@ package guest
 
 import (
 	"bufio"
-	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
 	"syscall"
 
@@ -13,30 +11,33 @@ import (
 )
 
 var safeFilesystems = map[string]bool{
-	"proc":       true,
-	"sysfs":      true,
-	"tmpfs":      true,
-	"devtmpfs":   true,
-	"securityfs": true,
-	"debugfs":    true,
-	"tracefs":    true,
-	"pstore":     true,
-	"cgroup":     true,
-	"bpf":        true,
-	"hugetlbfs":  true,
-	"overlayfs":  true,
-	"squashfs":   true,
-	"iso9660":    true,
-	"romfs":      true,
-	"cramfs":     true,
-	"nsfs":       true,
-	"aufs":       true,
-	"shiftfs":    true,
-	"rpc_pipefs": true,
-	"nfsd":       true,
-	"fusectl":    true,
-	"mqueue":     true,
-	"efivarfs":   true,
+	"proc":        true,
+	"sysfs":       true,
+	"tmpfs":       true,
+	"devtmpfs":    true,
+	"securityfs":  true,
+	"debugfs":     true,
+	"tracefs":     true,
+	"pstore":      true,
+	"cgroup":      true,
+	"bpf":         true,
+	"hugetlbfs":   true,
+	"overlayfs":   true,
+	"squashfs":    true,
+	"iso9660":     true,
+	"romfs":       true,
+	"cramfs":      true,
+	"nsfs":        true,
+	"aufs":        true,
+	"shiftfs":     true,
+	"rpc_pipefs":  true,
+	"nfsd":        true,
+	"fusectl":     true,
+	"mqueue":      true,
+	"efivarfs":    true,
+	"virtiofs":    true,
+	"erofs":       true,
+	"binfmt_misc": true,
 }
 
 var safeMounts = map[string]bool{
@@ -46,7 +47,7 @@ var safeMounts = map[string]bool{
 	"/":     true,
 }
 
-func UnmountAll(ctx context.Context) error {
+func UnmountAll() error {
 	file, err := os.Open("/proc/self/mounts")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error opening /proc/self/mounts: %v\n", err)
@@ -94,51 +95,6 @@ func UnmountAll(ctx context.Context) error {
 			fmt.Fprintf(os.Stderr, "Error unmounting %s: %v\n", targets[i], err)
 			os.Exit(1)
 		}
-	}
-
-	return nil
-}
-
-func mkext4(device string, options []string) error {
-	args := []string{"mkfs.ext4", "-q", "-F"}
-	args = append(args, options...)
-	args = append(args, device)
-
-	cmd := exec.Command("/sbin/mke2fs")
-	cmd.Args = args
-
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("Failed to format %s - %v: %s", device, err, out)
-	}
-
-	return nil
-}
-
-func mkbtrfs(device string, options []string) error {
-	args := []string{"mkfs.btrfs", "-q", "-f"}
-	args = append(args, options...)
-	args = append(args, device)
-
-	cmd := exec.Command("/sbin/mkfs.btrfs")
-	cmd.Args = args
-
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("Failed to format %s - %v: %s", device, err, out)
-	}
-
-	return nil
-}
-
-func mkswap(device string, options []string) error {
-	args := []string{"mkswap"}
-	args = append(args, options...)
-	args = append(args, device)
-
-	cmd := exec.Command("/bin/busybox")
-	cmd.Args = args
-
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("Failed to format %s - %v: %s", device, err, out)
 	}
 
 	return nil

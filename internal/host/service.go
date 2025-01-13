@@ -1,0 +1,120 @@
+package host
+
+import (
+	"context"
+	"fmt"
+	"net"
+	"strings"
+
+	"github.com/amadigan/macoby/internal/rpc"
+)
+
+const DefaultPATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+type SystemdNotify struct {
+	Data map[string]string
+	Addr net.UnixAddr
+}
+
+func (n SystemdNotify) IsReady() bool {
+	return n.Data["READY"] == "1"
+}
+
+func ReadSDNotify(client *rpc.DatagramClient) (*SystemdNotify, error) {
+	bs, _, err := client.Read(8192)
+	if err != nil {
+		return nil, err
+	}
+
+	rv := &SystemdNotify{Data: map[string]string{}}
+
+	for _, line := range strings.Split(string(bs), "\n") {
+		parts := strings.SplitN(line, "=", 2)
+
+		if len(parts) != 2 {
+			continue
+		}
+
+		rv.Data[parts[0]] = parts[1]
+	}
+
+	return rv, nil
+}
+
+func (vm *VirtualMachine) LaunchService(ctx context.Context, cmd rpc.Command) error {
+	if cmd.Name == "" {
+		return fmt.Errorf("missing service name for launch of %s", cmd.Path)
+	}
+
+	sockPath := fmt.Sprintf("/run/%s.sock", cmd.Name)
+
+	conn, err := vm.ListenUnixgram("unixgram", &net.UnixAddr{Name: sockPath, Net: "unixgram"})
+	if err != nil {
+		return fmt.Errorf("failed to listen on vm:%s: %w", sockPath, err)
+	}
+
+	defer conn.Close()
+
+	if len(cmd.Env) == 0 {
+		cmd.Env = make([]string, 1, 2)
+		cmd.Env[0] = "PATH=" + DefaultPATH
+	}
+
+	cmd.Env = append(cmd.Env, "NOTIFY_SOCKET="+sockPath)
+
+	if _, err := vm.Launch(cmd); err != nil {
+		return fmt.Errorf("failed to launch %s: %w", cmd.Name, err)
+	}
+
+	rc := make(chan int)
+	defer close(rc)
+
+	go func() {
+		for {
+			if notify, err := ReadSDNotify(conn); err != nil {
+				log.Errorf("failed to read from notify socket: %v", err)
+
+				defer func() {
+					_ = recover()
+				}()
+
+				rc <- -1
+
+				return
+			} else if notify.IsReady() {
+				rc <- 0
+
+				return
+			}
+		}
+	}()
+
+	go func() {
+		exit, err := vm.WaitService(cmd.Name)
+
+		defer func() {
+			_ = recover()
+		}()
+
+		if err != nil {
+			rc <- 1
+		} else if exit == 0 {
+			rc <- -1
+		} else {
+			rc <- exit
+		}
+	}()
+
+	select {
+	case <-ctx.Done():
+		return fmt.Errorf("launch of %s timed out", cmd.Name)
+	case code := <-rc:
+		if code == 0 {
+			return nil
+		} else if code == -1 {
+			return fmt.Errorf("service %s exited", cmd.Name)
+		} else {
+			return fmt.Errorf("service %s exited with code %d", cmd.Name, code)
+		}
+	}
+}

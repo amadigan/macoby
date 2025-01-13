@@ -22,7 +22,7 @@ func IdentifyBtrfs(file io.ReaderAt) (*Filesystem, error) {
 		Type:  FSbtrfs,
 		Id:    readFilesystemId(superblock, 0x20),
 		Label: readLabel(superblock[0x12B:0x22B]),
-		Size:  uint64(binary.LittleEndian.Uint64(superblock[0x70:0x78])),
+		Size:  int64(binary.LittleEndian.Uint64(superblock[0x70:0x78])),
 	}
 
 	return &p, nil

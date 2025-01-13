@@ -2,6 +2,7 @@ package rpc
 
 import (
 	"encoding/gob"
+	"fmt"
 	"io"
 )
 
@@ -11,6 +12,7 @@ const (
 	LogStdout LogMethod = iota
 	LogStderr
 	LogInternal
+	LogExit
 )
 
 type LogEvent struct {
@@ -27,7 +29,9 @@ func NewEmitter(w io.WriteCloser, bufsize int) chan<- LogEvent {
 		defer w.Close()
 
 		for e := range ch {
-			enc.Encode(e)
+			if err := enc.Encode(e); err != nil {
+				panic(fmt.Errorf("failed to encode log event: %w", err))
+			}
 		}
 	}()
 
@@ -46,7 +50,11 @@ func NewReceiver(r io.ReadCloser, bufsize int) <-chan LogEvent {
 			var e LogEvent
 
 			if err := dec.Decode(&e); err != nil {
-				return
+				if err == io.EOF {
+					return
+				}
+
+				panic(fmt.Errorf("failed to decode log event: %w", err))
 			}
 
 			ch <- e

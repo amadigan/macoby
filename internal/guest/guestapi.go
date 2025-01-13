@@ -17,8 +17,9 @@ import (
 var log = applog.New("guest")
 
 type Guest struct {
-	processeses map[int]*os.Process
+	processeses map[string]*os.Process
 	emitter     chan<- rpc.LogEvent
+	clockStop   chan struct{}
 
 	mutex sync.Mutex
 }
@@ -85,19 +86,55 @@ func (g *Guest) Launch(req rpc.Command, pid *int64) error {
 		name = req.Path
 	}
 
-	cmd.Stdout = rpc.NewEmitterWriter(g.emitter, req.Path, rpc.LogStdout)
-	cmd.Stderr = rpc.NewEmitterWriter(g.emitter, req.Path, rpc.LogStderr)
+	cmd.Stdout = rpc.NewEmitterWriter(g.emitter, name, rpc.LogStdout)
+	cmd.Stderr = rpc.NewEmitterWriter(g.emitter, name, rpc.LogStderr)
 
 	if err := cmd.Start(); err != nil {
 		return err
 	}
 
+	*pid = int64(cmd.Process.Pid)
+
 	g.mutex.Lock()
 	defer g.mutex.Unlock()
+	g.processeses[name] = cmd.Process
 
-	g.processeses[cmd.Process.Pid] = cmd.Process
+	return nil
+}
 
-	*pid = int64(cmd.Process.Pid)
+func (g *Guest) Wait(service string, exit *int) error {
+	g.mutex.Lock()
+	process := g.processeses[service]
+	g.mutex.Unlock()
+
+	if process == nil {
+		return fmt.Errorf("no such process: %s", service)
+	}
+
+	state, err := process.Wait()
+
+	if err != nil {
+		return err
+	}
+
+	*exit = state.ExitCode()
+
+	g.mutex.Lock()
+	delete(g.processeses, service)
+	g.mutex.Unlock()
+
+	return nil
+}
+
+func (g *Guest) Release(service string, _ *struct{}) error {
+	g.mutex.Lock()
+	process := g.processeses[service]
+	delete(g.processeses, service)
+	g.mutex.Unlock()
+
+	if process != nil {
+		_ = process.Release()
+	}
 
 	return nil
 }
@@ -107,5 +144,17 @@ func (g *Guest) Listen(req rpc.ListenRequest, _ *struct{}) error {
 }
 
 func (g *Guest) Signal(req rpc.SignalRequest, _ *struct{}) error {
+	if req.Service != "" {
+		g.mutex.Lock()
+		process := g.processeses[req.Service]
+		g.mutex.Unlock()
+
+		if process == nil {
+			return fmt.Errorf("no such process: %s", req.Service)
+		}
+
+		return process.Signal(syscall.Signal(req.Signal))
+	}
+
 	return syscall.Kill(int(req.Pid), syscall.Signal(req.Signal))
 }

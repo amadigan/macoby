@@ -6,4 +6,4 @@
 Dockerfile
 local/
 tools/
-build/
+dist/

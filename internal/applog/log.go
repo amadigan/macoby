@@ -2,6 +2,9 @@ package applog
 
 import (
 	"fmt"
+	"io"
+	"log"
+	"os"
 	"sync/atomic"
 	"time"
 )
@@ -33,6 +36,8 @@ type Logger struct {
 	pkg string
 }
 
+var logger = log.New(os.Stderr, "", 0)
+
 func Log(level LogLevel, when time.Time, pkg string, msg string, args ...any) {
 	if minLogLevel.Load() > int32(level) {
 		return
@@ -45,7 +50,11 @@ func Log(level LogLevel, when time.Time, pkg string, msg string, args ...any) {
 
 	nargs = append(nargs, args...)
 
-	fmt.Printf("%s [%s] %s "+msg+"\n", nargs...)
+	logger.Printf("%s %s %s: "+msg, nargs...)
+}
+
+func SetOutput(w io.Writer) {
+	logger.SetOutput(w)
 }
 
 func New(pkg string) *Logger {

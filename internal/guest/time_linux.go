@@ -2,6 +2,7 @@ package guest
 
 import (
 	"os"
+	"runtime"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -19,7 +20,7 @@ func StartClockSync(interval time.Duration, stop <-chan struct{}) {
 	defer f.Close()
 
 	for {
-		start := time.Now()
+		runtime.LockOSThread()
 		rt, err := unix.IoctlGetRTCTime(int(f.Fd()))
 		now := time.Now()
 
@@ -36,21 +37,17 @@ func StartClockSync(interval time.Duration, stop <-chan struct{}) {
 		minute := int(rt.Min)
 		sec := int(rt.Sec)
 
-		// 3) Convert that into a Go time.Time, assuming UTC.
 		rtcTime := time.Date(year, month, day, hour, minute, int(sec), 0, time.UTC)
-		tv := unix.NsecToTimeval(now.UnixNano())
+		tv := unix.NsecToTimeval(rtcTime.UnixNano())
 
 		if rtcTime.Sub(now).Abs() >= 2*time.Second {
 			if err := unix.Settimeofday(&tv); err != nil {
 				log.Errorf("Failed to set time: %v", err)
 			} else {
-				log.Errorf("Time set to %v, was %v", tv, now)
+				log.Infof("Time set to %v, was %v", tv, now)
 			}
 		}
-
-		elapsed := time.Since(start)
-
-		log.Errorf("RTC time: %v, elapsed: %v", rtcTime, elapsed)
+		runtime.UnlockOSThread()
 
 		select {
 		case <-time.After(interval):

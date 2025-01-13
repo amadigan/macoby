@@ -25,10 +25,10 @@ type Filesystem struct {
 	Type  FSType
 	Id    uuid.UUID
 	Label string
-	Size  uint64 // in bytes
+	Size  int64 // in bytes
 }
 
-func Identify(size uint64, f io.ReaderAt) (*Filesystem, error) {
+func Identify(size int64, f io.ReaderAt) (*Filesystem, error) {
 	if size > MinSizeSquashfs {
 		if rv, err := IdentifySquashfs(f); rv != nil || err != nil {
 			return rv, err

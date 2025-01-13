@@ -3,8 +3,6 @@ package guest
 import (
 	"context"
 	"fmt"
-	"io"
-	golog "log"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -61,9 +59,9 @@ func StartGuest() error {
 	emitter := rpc.NewEmitter(eventConn, bufsize)
 
 	// send logs to the event emitter
-	golog.SetOutput(io.MultiWriter(rpc.NewEmitterWriter(emitter, "guest", rpc.LogInternal), os.Stderr))
+	applog.SetOutput(rpc.NewEmitterWriter(emitter, "guest", rpc.LogInternal))
 
-	g := &Guest{emitter: emitter, processeses: map[int]*os.Process{}}
+	g := &Guest{emitter: emitter, processeses: map[string]*os.Process{}}
 
 	log.Info("guest started")
 
@@ -102,7 +100,13 @@ func (g *Guest) Init(req rpc.InitRequest, out *rpc.InitResponse) error {
 		return err
 	}
 
-	go StartClockSync(10*time.Second, make(chan struct{}))
+	if err := unix.Mount("binfmt_misc", "/proc/sys/fs/binfmt_misc", "binfmt_misc", 0, ""); err != nil {
+		return err
+	}
+
+	g.clockStop = make(chan struct{})
+
+	go StartClockSync(10*time.Second, g.clockStop)
 
 	if ipv4, ipv6, err := InitializeNetwork(); err == nil {
 		*out = rpc.InitResponse{IPv4: ipv4, IPv6: ipv6}
@@ -117,7 +121,7 @@ func (g *Guest) Init(req rpc.InitRequest, out *rpc.InitResponse) error {
 	return nil
 }
 
-func stopAllProcesses(ctx context.Context, procs map[int]*os.Process) {
+func stopAllProcesses(ctx context.Context, procs map[string]*os.Process) {
 	for _, p := range procs {
 		_ = p.Signal(syscall.SIGTERM)
 	}
@@ -142,12 +146,11 @@ func stopAllProcesses(ctx context.Context, procs map[int]*os.Process) {
 }
 
 func (g *Guest) Shutdown(struct{}, *struct{}) error {
+	close(g.clockStop)
 	g.mutex.Lock()
 	defer g.mutex.Unlock()
 
-	ctx := context.Background()
-
-	sctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	sctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 
 	stopAllProcesses(sctx, g.processeses)
 
@@ -155,12 +158,8 @@ func (g *Guest) Shutdown(struct{}, *struct{}) error {
 
 	g.processeses = nil
 
-	if err := UnmountAll(ctx); err != nil {
-		panic(err)
-	}
-
-	if err := syscall.Reboot(syscall.LINUX_REBOOT_CMD_POWER_OFF); err != nil {
-		panic(err)
+	if err := UnmountAll(); err != nil {
+		return err
 	}
 
 	return nil

@@ -79,6 +79,8 @@ func (d *DatagramProxy) Read(size int, out *Datagram) error {
 			return err
 		}
 
+		log.Infof("proxying %d bytes from udp=%v", n, addr)
+
 		out.UDPAddr = addr
 		out.Data = buf[:n]
 	} else {
@@ -86,6 +88,8 @@ func (d *DatagramProxy) Read(size int, out *Datagram) error {
 		if err != nil {
 			return err
 		}
+
+		log.Infof("proxying %d bytes from unix=%v", n, addr)
 
 		out.UnixAddr = addr
 		out.Data = buf[:n]
@@ -189,6 +193,8 @@ func (d *DatagramClient) ReadFrom(b []byte) (int, net.Addr, error) {
 		return 0, nil, err
 	}
 
+	log.Infof("Read %d bytes from udp=%v unix=%v", len(datagram.Data), datagram.UDPAddr, datagram.UnixAddr)
+
 	n := copy(b, datagram.Data)
 
 	if datagram.UDPAddr != nil {
@@ -205,6 +211,8 @@ func (d *DatagramClient) Read(size int) ([]byte, net.Addr, error) {
 		return nil, nil, err
 	}
 
+	log.Infof("Read %d bytes from udp=%v unix=%v", len(datagram.Data), datagram.UDPAddr, datagram.UnixAddr)
+
 	if datagram.UDPAddr != nil {
 		return datagram.Data, datagram.UDPAddr, nil
 	}
@@ -213,7 +221,8 @@ func (d *DatagramClient) Read(size int) ([]byte, net.Addr, error) {
 }
 
 func (d *DatagramClient) Close() error {
-	d.client.Call("DatagramProxy.Close", struct{}{}, nil)
+	_ = d.client.Call("DatagramProxy.Close", struct{}{}, nil)
+
 	return d.client.Close()
 }
 
@@ -276,7 +285,7 @@ func ListenUDP(client *rpc.Client, network string, laddr *net.UDPAddr) (net.Pack
 	return &DatagramClient{client: client, localAddr: laddr}, nil
 }
 
-func DialUnix(client *rpc.Client, network string, laddr *net.UnixAddr, raddr *net.UnixAddr) (net.PacketConn, error) {
+func DialUnix(client *rpc.Client, network string, laddr *net.UnixAddr, raddr *net.UnixAddr) (*DatagramClient, error) {
 	spec := DatagramSpec{
 		Network:    network,
 		LocalUnix:  laddr,
@@ -290,7 +299,7 @@ func DialUnix(client *rpc.Client, network string, laddr *net.UnixAddr, raddr *ne
 	return &DatagramClient{client: client, localAddr: laddr}, nil
 }
 
-func ListenUnix(client *rpc.Client, network string, laddr *net.UnixAddr) (net.PacketConn, error) {
+func ListenUnix(client *rpc.Client, network string, laddr *net.UnixAddr) (*DatagramClient, error) {
 	spec := DatagramSpec{
 		Network:   network,
 		LocalUnix: laddr,

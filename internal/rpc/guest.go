@@ -19,6 +19,10 @@ type Guest interface {
 	Run(Command, *CommandOutput) error
 	// Launch... execute a command asynchronously, output sent to event stream
 	Launch(Command, *int64) error
+	// Wait... wait for a service to exit
+	Wait(string, *int) error
+	// Release... release a service without calling Wait
+	Release(string, *struct{}) error
 	// Listen... listen on a network address
 	Listen(ListenRequest, *struct{}) error
 	// Signal... send a signal to a process
@@ -40,8 +44,9 @@ type InitResponse struct {
 }
 
 type SignalRequest struct {
-	Pid    int64
-	Signal int
+	Service string
+	Pid     int64
+	Signal  int
 }
 
 type WriteRequest struct {
@@ -136,6 +141,14 @@ func (c *GuestClient) Run(req Command, out *CommandOutput) error {
 
 func (c *GuestClient) Launch(req Command, out *int64) error {
 	return c.Call("Guest.Launch", req, out)
+}
+
+func (c *GuestClient) Wait(req string, out *int) error {
+	return c.Call("Guest.Wait", req, out)
+}
+
+func (c *GuestClient) Release(req string, _ *struct{}) error {
+	return c.Call("Guest.Release", req, nil)
 }
 
 func (c *GuestClient) Listen(req ListenRequest, _ *struct{}) error {

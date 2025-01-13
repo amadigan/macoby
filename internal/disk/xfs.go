@@ -25,9 +25,10 @@ func IdentifyXfs(file io.ReaderAt) (*Filesystem, error) {
 	}
 
 	sbBlocksize := binary.LittleEndian.Uint32(superblock[0x4:0x8])
-	sbDblocks := binary.LittleEndian.Uint64(superblock[0x10:0x18])
+	//nolint:gosec
+	sbDblocks := int64(binary.LittleEndian.Uint64(superblock[0x10:0x18]))
 
-	p.Size = uint64(sbBlocksize) * sbDblocks
+	p.Size = int64(sbBlocksize) * sbDblocks
 
 	return &p, nil
 }

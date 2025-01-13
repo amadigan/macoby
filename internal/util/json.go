@@ -1,11 +1,9 @@
-package host
+package util
 
 import (
-	"cmp"
 	"encoding/json"
 	"fmt"
 	"os"
-	"slices"
 
 	"github.com/tidwall/jsonc"
 )
@@ -24,20 +22,4 @@ func ReadJsonConfig(abspath string, v any) error {
 	}
 
 	return nil
-}
-
-func sliceOf[T any](v ...T) []T {
-	return v
-}
-
-func sortKeys[K cmp.Ordered, V any](m map[K]V) []K {
-	keys := make([]K, 0, len(m))
-
-	for k := range m {
-		keys = append(keys, k)
-	}
-
-	slices.Sort(keys)
-
-	return keys
 }

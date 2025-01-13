@@ -6,19 +6,18 @@
 		"docker": {
 			"mount": "/var/lib/docker",
 			"size": "40G",
-			"fs": "btrfs",
+			"fs": "ext4",
 			"mkfs": [
-				"--mixed",
-				"--metadata", "single",
-				"--data", "single",
-				"--label", "docker"
-			],
-			"opts": [
-				"defaults",
-				"noatime",
-				"nodiratime",
+				"-m", "0",
+				"-b", "4096",
+				"-i", "1048576",
+				"-T", "ext4",
+				"-O", "uninit_bg",
+				// allow online resize up to 2TB
+				"-E", "lazy_itable_init=1,lazy_journal_init=1,resize=524288000",
+				"-F"
 			]
-		},
+		}
 	},
 	"shares": {
 		"/Users": "/Users",
@@ -35,11 +34,12 @@
 		"max-backups": 3,
 		"max-age": 7
 	},
-	"dockerd": {
-		"storage-driver": "btrfs",
-		"features": {
-			"containerd-snapshotter": true,
-		}
+	"json-conf": {
+		"/etc/docker/daemon.json": {
+			"features": {
+				"containerd-snapshotter": true,
+			}
+		},
 	},
 	"host-iface": "127.0.0.1", // or the name of the host interface to publish on e.g. en0
 	"sysctl": {
@@ -54,5 +54,5 @@
 		"net.bridge.bridge-nf-call-arptables": "1",
 		"vm.max_map_count": "262144",
 		"user.max_user_namespaces": "28633",
-	}
+	},
 }

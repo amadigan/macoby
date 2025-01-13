@@ -1,10 +1,15 @@
 package host
 
 import (
+	"fmt"
+	"io"
 	"net"
 	gorpc "net/rpc"
 
+	"github.com/Code-Hex/vz/v3"
+	"github.com/amadigan/macoby/internal/applog"
 	"github.com/amadigan/macoby/internal/rpc"
+	"github.com/amadigan/macoby/internal/util"
 )
 
 func (vm *VirtualMachine) Write(path string, data []byte) error {
@@ -29,6 +34,13 @@ func (vm *VirtualMachine) Launch(req rpc.Command) (int64, error) {
 	var pid int64
 	err := vm.client.Launch(req, &pid)
 	return pid, err
+}
+
+func (vm *VirtualMachine) WaitService(name string) (int, error) {
+	var exit int
+	err := vm.client.Wait(name, &exit)
+
+	return exit, err
 }
 
 func (vm *VirtualMachine) Listen(network, address string) error {
@@ -72,7 +84,7 @@ func (vm *VirtualMachine) DialUnixgram(network string, laddr *net.UnixAddr, radd
 	return rpc.DialUnix(gorpc.NewClient(conn), network, laddr, raddr)
 }
 
-func (vm *VirtualMachine) ListenUnixgram(network string, laddr *net.UnixAddr) (net.PacketConn, error) {
+func (vm *VirtualMachine) ListenUnixgram(network string, laddr *net.UnixAddr) (*rpc.DatagramClient, error) {
 	conn, err := vm.vsock.Connect(1)
 	if err != nil {
 		return nil, err
@@ -88,4 +100,69 @@ func (vm *VirtualMachine) Dial(network, address string) (net.Conn, error) {
 	}
 
 	return rpc.Dial(conn, network, address)
+}
+
+func (vm *VirtualMachine) Forward(listener net.Listener, network, address string) {
+	vm.mutex.Lock()
+	vm.listeners[listener] = struct{}{}
+	vm.mutex.Unlock()
+
+	applog.FanOut(listener.Accept, func(conn net.Conn) {
+		defer conn.Close()
+
+		remote, err := vm.Dial(network, address)
+		if err != nil {
+			log.Errorf("failed to dial %s: %v", address, err)
+			return
+		}
+
+		defer remote.Close()
+
+		go func() {
+			_, _ = io.Copy(remote, conn)
+		}()
+
+		_, _ = io.Copy(conn, remote)
+	}, log)
+
+	vm.mutex.Lock()
+	delete(vm.listeners, listener)
+	vm.mutex.Unlock()
+}
+
+func (vm *VirtualMachine) Shutdown() error {
+	shutdown := util.Await(func() (struct{}, error) {
+		err := vm.client.Shutdown(struct{}{}, nil)
+
+		return struct{}{}, err
+	})
+
+	vm.mutex.Lock()
+	for listener := range vm.listeners {
+		_ = listener.Close()
+	}
+	vm.listeners = map[net.Listener]struct{}{}
+	vm.mutex.Unlock()
+
+	if _, err := shutdown(); err != nil {
+		return err
+	}
+
+	if err := vm.rpcConn.Close(); err != nil {
+		return fmt.Errorf("failed to close rpc connection: %w", err)
+	}
+
+	stateCh := vm.vm.StateChangedNotify()
+
+	for state := range stateCh {
+		log.Infof("vm shutting down... state: %s", state)
+
+		if state == vz.VirtualMachineStateStopped {
+			break
+		} else if state == vz.VirtualMachineStateError {
+			return fmt.Errorf("vm failed to shutdown, state: %s", state)
+		}
+	}
+
+	return nil
 }
