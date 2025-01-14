@@ -29,6 +29,7 @@ func main() {
 
 	layout.SetDefaults()
 	layout.SetDefaultSockets()
+
 	if err := layout.ResolvePaths(env, home); err != nil {
 		panic(fmt.Errorf("failed to resolve paths: %w", err))
 	}

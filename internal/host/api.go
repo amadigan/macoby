@@ -31,6 +31,7 @@ func (cs *ControlServer) SetupServer() {
 func (c *ControlServer) newMux() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc(fmt.Sprintf("/%s.json", config.Name), c.handleConfig)
+
 	return mux
 }
 
@@ -38,6 +39,7 @@ func (c *ControlServer) handleConfig(w http.ResponseWriter, r *http.Request) {
 	bs, err := json.MarshalIndent(c.Layout, "", "  ")
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
+
 		return
 	}
 

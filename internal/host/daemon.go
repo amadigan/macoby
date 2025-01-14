@@ -2,7 +2,10 @@ package host
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"path"
@@ -40,8 +43,6 @@ func RunDaemon(osArgs []string, env map[string]string) {
 		Env:    env,
 	}
 
-	defer control.Close()
-
 	if err := control.SetupLogging(); err != nil {
 		panic(err)
 	}
@@ -54,18 +55,22 @@ func RunDaemon(osArgs []string, env map[string]string) {
 		log.Fatal(fmt.Errorf("failed to resolve paths: %w", err))
 	}
 
-	if err := control.ListenLaunchdControl(); err != nil {
-		log.Fatal(err)
-	}
-
 	if control.vm, err = NewVirtualMachine(*control.Layout); err != nil {
 		log.Fatal(fmt.Errorf("failed to create VM: %w", err))
 	}
 
+	if err := control.ListenLaunchdControl(); err != nil {
+		log.Fatal(err)
+	}
+
+	defer control.Close()
+
 	start := time.Now()
 
 	if err := control.vm.Start(control.handleLogEvent); err != nil {
-		log.Fatal(fmt.Errorf("failed to start VM: %w", err))
+		log.Errorf("failed to start VM: %w", err)
+
+		return
 	}
 
 	dockerdCmd := rpc.Command{Name: "dockerd", Path: "/usr/bin/dockerd"}
@@ -74,7 +79,9 @@ func RunDaemon(osArgs []string, env map[string]string) {
 	defer cancel()
 
 	if err := control.vm.LaunchService(ctx, dockerdCmd); err != nil {
-		log.Fatal(fmt.Errorf("failed to launch dockerd: %w", err))
+		log.Errorf("failed to launch dockerd: %w", err)
+
+		return
 	}
 
 	log.Infof("dockerd started in %s", time.Since(start))
@@ -132,14 +139,19 @@ func (cs *ControlServer) ListenLaunchdControl() error {
 
 	socks, err := launchd.Sockets("control")
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to get control socket: %w", err)
 	}
 
 	cs.ControlSockets = socks
 
 	for _, sock := range socks {
 		log.Infof("control listening on %s", sock.Addr())
-		go cs.Serve(sock)
+
+		go func(sock net.Listener) {
+			if err := cs.Serve(sock); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				log.Errorf("failed to serve control: %w", err)
+			}
+		}(sock)
 	}
 
 	return nil
@@ -149,11 +161,12 @@ func (cs *ControlServer) ForwardLaunchdDockerSockets(count int) error {
 	for i := 0; i < count; i++ {
 		socks, err := launchd.Sockets(fmt.Sprintf("docker%d", i))
 		if err != nil {
-			return err
+			return fmt.Errorf("failed to get docker%d socket: %w", i, err)
 		}
 
 		for _, sock := range socks {
 			log.Infof("docker listening on %s", sock.Addr())
+
 			go cs.vm.Forward(sock, "unix", cs.Layout.DockerSocket.ContainerPath)
 		}
 	}

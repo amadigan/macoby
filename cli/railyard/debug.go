@@ -124,8 +124,8 @@ func debugVM(ctx context.Context, cli *Cli) error {
 
 	log.Infof("dockerd started in %s", time.Since(start))
 
-	go monitorContainerd(vm)
-	go monitorDockerd(vm)
+	go monitorContainerd(ctx, vm)
+	go monitorDockerd(ctx, vm)
 
 	for _, listener := range listeners {
 		go vm.Forward(listener, "unix", layout.DockerSocket.ContainerPath)
@@ -156,8 +156,9 @@ func debugLog(ch <-chan applog.Event) {
 	}
 }
 
-func monitorContainerd(vm *host.VirtualMachine) {
+func monitorContainerd(ctx context.Context, vm *host.VirtualMachine) {
 	log.Infof("monitoring containerd")
+
 	dialOpts := []grpc.DialOption{
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		grpc.WithConnectParams(grpc.ConnectParams{
@@ -172,12 +173,12 @@ func monitorContainerd(vm *host.VirtualMachine) {
 	containerd, err := containerdclient.New("/run/docker/containerd/containerd.sock", containerdclient.WithDialOpts(dialOpts))
 	if err != nil {
 		log.Errorf("failed to connect to containerd: %v", err)
+
 		return
 	}
 
 	defer containerd.Close()
 
-	ctx := context.Background()
 	msgChan, errChan := containerd.EventService().Subscribe(ctx)
 
 	go func() {
@@ -206,6 +207,7 @@ func monitorContainerd(vm *host.VirtualMachine) {
 			cont, err := containerd.ContainerService().Get(ctxns, cev.ID)
 			if err != nil {
 				log.Errorf("failed to get container %s: %v", cev.ID, err)
+
 				continue
 			}
 
@@ -214,26 +216,23 @@ func monitorContainerd(vm *host.VirtualMachine) {
 	}
 }
 
-func monitorDockerd(vm *host.VirtualMachine) {
+func monitorDockerd(ctx context.Context, vm *host.VirtualMachine) {
 	log.Infof("monitoring dockerd")
 
 	dclient, err := client.NewClientWithOpts(
 		client.WithHost("http://localhost"),
 		client.WithDialContext(func(ctx context.Context, network, addr string) (net.Conn, error) {
-			fmt.Printf("monitorDockerd dialing %s %s\n", network, addr)
-
 			return vm.Dial("unix", "/run/docker.sock")
 		}),
 	)
 
 	if err != nil {
 		log.Errorf("failed to connect to dockerd: %v", err)
+
 		return
 	}
 
 	defer dclient.Close()
-
-	ctx := context.Background()
 
 	msgCh, errCh := dclient.Events(ctx, devents.ListOptions{})
 

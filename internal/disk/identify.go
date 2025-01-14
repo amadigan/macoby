@@ -59,6 +59,7 @@ func Identify(size int64, f io.ReaderAt) (*Filesystem, error) {
 func readFilesystemId(bs []byte, offset int) uuid.UUID {
 	var id uuid.UUID
 	copy(id[:], bs[offset:offset+16])
+
 	return id
 }
 

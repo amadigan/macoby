@@ -195,6 +195,7 @@ func (d LogDirectory) newFileLog(pattern string, files *util.List[time.Time]) (c
 		}
 
 		fl.outfile = outfile
+
 		pos, err := outfile.Seek(0, io.SeekEnd)
 		if err != nil {
 			return nil, fmt.Errorf("Failed to seek to end of log file: %w\n", err)

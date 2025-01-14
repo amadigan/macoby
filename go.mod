@@ -5,8 +5,12 @@ go 1.23.4
 require (
 	github.com/Code-Hex/vz/v3 v3.5.1
 	github.com/bored-engineer/go-launchd v0.0.0-20241220214420-b514778f4f80
+	github.com/containerd/containerd/api v1.8.0
 	github.com/containerd/containerd/v2 v2.0.1
+	github.com/containerd/errdefs v1.0.0
+	github.com/containerd/typeurl/v2 v2.2.3
 	github.com/docker/cli v27.4.1+incompatible
+	github.com/docker/docker v27.4.1+incompatible
 	github.com/google/uuid v1.6.0
 	github.com/insomniacslk/dhcp v0.0.0-20241224095048-b56fa0d5f25d
 	github.com/mdlayher/vsock v1.2.1
@@ -30,20 +34,16 @@ require (
 	github.com/cenkalti/backoff/v4 v4.3.0 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/containerd/cgroups/v3 v3.0.3 // indirect
-	github.com/containerd/containerd/api v1.8.0 // indirect
 	github.com/containerd/continuity v0.4.4 // indirect
-	github.com/containerd/errdefs v1.0.0 // indirect
 	github.com/containerd/errdefs/pkg v0.3.0 // indirect
 	github.com/containerd/fifo v1.1.0 // indirect
 	github.com/containerd/log v0.1.0 // indirect
 	github.com/containerd/platforms v1.0.0-rc.0 // indirect
 	github.com/containerd/plugin v1.0.0 // indirect
 	github.com/containerd/ttrpc v1.2.6 // indirect
-	github.com/containerd/typeurl/v2 v2.2.3 // indirect
 	github.com/distribution/reference v0.6.0 // indirect
 	github.com/docker/cli-docs-tool v0.8.0 // indirect
 	github.com/docker/distribution v2.8.3+incompatible // indirect
-	github.com/docker/docker v27.4.1+incompatible // indirect
 	github.com/docker/docker-credential-helpers v0.8.2 // indirect
 	github.com/docker/go v1.5.1-1.0.20160303222718-d30aec9fd63c // indirect
 	github.com/docker/go-connections v0.5.0 // indirect

@@ -19,7 +19,11 @@ func NewEnableCommand(cli *Cli) *cobra.Command {
 		Use:   "enable",
 		Short: "Enable railyard daemon",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return enableDaemon(cli)
+			if err := cli.setup(); err != nil {
+				return err
+			}
+
+			return cli.enableDaemon()
 		},
 	}
 
@@ -31,18 +35,18 @@ func NewDisableCommand(cli *Cli) *cobra.Command {
 		Use:   "disable",
 		Short: "Disable railyard daemon",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return disableDaemon(cli)
+			if err := cli.setup(); err != nil {
+				return err
+			}
+
+			return cli.disableDaemon()
 		},
 	}
 
 	return cmd
 }
 
-func enableDaemon(cli *Cli) error {
-	if err := cli.setup(); err != nil {
-		return err
-	}
-
+func (cli *Cli) enableDaemon() error {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return fmt.Errorf("failed to get user home directory: %w", err)
@@ -53,15 +57,17 @@ func enableDaemon(cli *Cli) error {
 		return fmt.Errorf("failed to get current user: %w", err)
 	}
 
-	plist, id, err := cli.generatePlist()
+	plist, id, err := cli.generatePlist(cli.Suffix)
 	if err != nil {
 		return fmt.Errorf("failed to generate plist: %w", err)
 	}
 
 	plistPath := filepath.Join(home, "Library/LaunchAgents", id+".plist")
 
+	target := "gui/" + user.Uid + "/" + id
+
 	if bs, _ := os.ReadFile(plistPath); !bytes.Equal(bs, plist) {
-		_ = remove(user.Uid, plistPath)
+		_ = bootout(target)
 
 		//nolint:gosec
 		if err := os.WriteFile(plistPath, plist, 0644); err != nil {
@@ -77,40 +83,35 @@ func enableDaemon(cli *Cli) error {
 		}
 	}
 
-	return nil
-}
-
-func remove(uid, path string) error {
-	if err := os.Remove(path); err != nil {
-		if !os.IsNotExist(err) {
-			return fmt.Errorf("failed to remove %s: %w", path, err)
-		}
-	}
-
-	//nolint:gosec
-	cmd := exec.Command("launchctl", "bootout", "gui/"+uid, path)
-	out, err := cmd.CombinedOutput()
-
-	if err != nil {
-		return fmt.Errorf("failed to unload %s: %s: %w", path, string(out), err)
+	if err = cli.upsertContext(); err != nil {
+		log.Warnf("failed to update context: %v", err)
+	} else if err = cli.selectContext(); err != nil {
+		log.Warnf("failed to select context: %v", err)
 	}
 
 	return nil
 }
 
-func disableDaemon(cli *Cli) error {
-	if err := cli.setup(); err != nil {
-		return err
+func bootout(serviceTarget string) error {
+	if exec.Command("launchctl", "print", serviceTarget) != nil {
+		// service is not loaded
+		return nil
 	}
 
+	if out, err := exec.Command("launchctl", "bootout", serviceTarget).CombinedOutput(); err != nil {
+		return fmt.Errorf("failed to unload %s: %s: %w", serviceTarget, string(out), err)
+	}
+
+	return nil
+}
+
+func (cli *Cli) disableDaemon() error {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return fmt.Errorf("failed to get user home directory: %w", err)
 	}
 
-	suffix := getSuffix(cli.Home)
-	id := config.AppID + suffix
-
+	id := config.AppID + cli.Suffix
 	plistPath := filepath.Join(home, "Library/LaunchAgents", id+".plist")
 
 	user, err := user.Current()
@@ -118,16 +119,27 @@ func disableDaemon(cli *Cli) error {
 		return fmt.Errorf("failed to get current user: %w", err)
 	}
 
-	return remove(user.Uid, plistPath)
+	target := "gui/" + user.Uid + "/" + id
+
+	if err := bootout(target); err != nil {
+		log.Warnf("failed to unload %s: %v", target, err)
+	} else {
+		log.Infof("unloaded %s", target)
+	}
+
+	if os.Remove(plistPath) == nil {
+		log.Infof("removed %s", plistPath)
+	}
+
+	return nil
 }
 
-func (cli *Cli) generatePlist() ([]byte, string, error) {
+func (cli *Cli) generatePlist(suffix string) ([]byte, string, error) {
 	self, err := os.Executable()
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to get executable path: %w", err)
 	}
 
-	suffix := getSuffix(cli.Home)
 	id := config.AppID + suffix
 
 	doc := plist.PropertyList{
@@ -137,9 +149,10 @@ func (cli *Cli) generatePlist() ([]byte, string, error) {
 			plist.String(fmt.Sprintf("%sd", config.Name)),
 			plist.String(fmt.Sprintf("%d", len(cli.Config.DockerSocket.HostPath))),
 		},
-		"EnvironmentVariables": plist.Dict{
-			config.HomeEnv: plist.String(cli.SearchPath),
-		},
+	}
+
+	if cli.SearchPath != defaultSearchPath() {
+		doc["EnvironmentVariables"] = plist.Dict{config.HomeEnv: plist.String(cli.SearchPath)}
 	}
 
 	if suffix != "" {
@@ -152,7 +165,7 @@ func (cli *Cli) generatePlist() ([]byte, string, error) {
 
 	nw, addr, err := cli.Config.ControlSocket.ResolveListenSocket(cli.Env, cli.Home)
 	if err != nil {
-		return nil, "", err
+		return nil, "", fmt.Errorf("failed to resolve control socket: %w", err)
 	}
 
 	sockets["control"] = socket(nw, addr)
@@ -160,7 +173,7 @@ func (cli *Cli) generatePlist() ([]byte, string, error) {
 	for i, sock := range cli.Config.DockerSocket.HostPath {
 		nw, addr, err := sock.ResolveListenSocket(cli.Env, cli.Home)
 		if err != nil {
-			return nil, "", err
+			return nil, "", fmt.Errorf("failed to resolve socket %s: %w", sock.Original, err)
 		}
 
 		sockets[fmt.Sprintf("docker%d", i)] = socket(nw, addr)
@@ -197,6 +210,7 @@ func (cli *Cli) generatePlist() ([]byte, string, error) {
 func encodeTokens(enc *xml.Encoder, tokens ...xml.Token) error {
 	for _, tok := range tokens {
 		if err := enc.EncodeToken(tok); err != nil {
+			//nolint:wrapcheck
 			return err
 		}
 	}
@@ -226,16 +240,6 @@ func socket(network, addr string) plist.Dict {
 	}
 
 	return dict
-}
-
-func getSuffix(home string) string {
-	defaultHome := os.ExpandEnv(config.UserHomeDir)
-
-	if home == defaultHome {
-		return ""
-	}
-
-	return "-" + filepath.Base(home)
 }
 
 func defaultSearchPath() string {

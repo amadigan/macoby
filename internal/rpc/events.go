@@ -2,6 +2,7 @@ package rpc
 
 import (
 	"encoding/gob"
+	"errors"
 	"fmt"
 	"io"
 )
@@ -50,7 +51,7 @@ func NewReceiver(r io.ReadCloser, bufsize int) <-chan LogEvent {
 			var e LogEvent
 
 			if err := dec.Decode(&e); err != nil {
-				if err == io.EOF {
+				if errors.Is(err, io.EOF) {
 					return
 				}
 

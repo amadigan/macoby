@@ -71,6 +71,7 @@ func (vm *VirtualMachine) Start(handler func(rpc.LogEvent)) error {
 	}
 
 	log.Debug("setting up VM base")
+
 	if err := setupVMBase(config); err != nil {
 		return err
 	}
@@ -80,6 +81,7 @@ func (vm *VirtualMachine) Start(handler func(rpc.LogEvent)) error {
 	_ = util.ReadJsonConfig(vm.layout.StateFile.Resolved, &state)
 
 	log.Debug("setting up VM network")
+
 	if err := setupVMNetwork(config, &state); err != nil {
 		return err
 	}
@@ -103,9 +105,7 @@ func (vm *VirtualMachine) Start(handler func(rpc.LogEvent)) error {
 	config.SetStorageDevicesVirtualMachineConfiguration(vm.storages)
 	config.SetDirectorySharingDevicesVirtualMachineConfiguration(vm.shares)
 
-	log.Debug("validating config")
 	validated, err := config.Validate()
-
 	if !validated || err != nil {
 		return fmt.Errorf("validation failed: %w", err)
 	}
@@ -122,30 +122,27 @@ func (vm *VirtualMachine) Start(handler func(rpc.LogEvent)) error {
 		return fmt.Errorf("failed to marshal state: %w", err)
 	}
 
+	//nolint:gosec
 	if err := os.WriteFile(vm.layout.StateFile.Resolved, bs, 0644); err != nil {
 		log.Warnf("failed to write state: %s", err)
 	}
 
 	log.Debug("starting VM")
+
 	if err := vm.vm.Start(); err != nil {
 		return fmt.Errorf("failed to start virtual machine: %w", err)
 	}
 
-	log.Debug("waiting for state change")
 	if _, ok := <-vm.vm.StateChangedNotify(); !ok {
 		return errors.New("state channel closed")
 	}
 
-	log.Debug("getting socket devices")
-	socks := vm.vm.SocketDevices()
-
-	if len(socks) < 1 {
+	if socks := vm.vm.SocketDevices(); len(socks) > 0 {
+		vm.vsock = socks[0]
+	} else {
 		return errors.New("no socket devices")
 	}
 
-	vm.vsock = socks[0]
-
-	log.Debug("listening on socket")
 	listener, err := vm.vsock.Listen(1)
 	if err != nil {
 		return fmt.Errorf("failed to listen on socket: %w", err)
@@ -154,6 +151,7 @@ func (vm *VirtualMachine) Start(handler func(rpc.LogEvent)) error {
 	defer listener.Close()
 
 	log.Debug("waiting for guest connection")
+
 	eventStream, err := listener.Accept()
 	if err != nil {
 		return fmt.Errorf("failed to accept connection: %w", err)
@@ -173,6 +171,7 @@ func (vm *VirtualMachine) Start(handler func(rpc.LogEvent)) error {
 	}
 
 	log.Debug("initializing guest")
+
 	vm.rpcConn = vconn
 	vm.client = rpc.NewGuestClient(gorpc.NewClient(vconn))
 
@@ -235,7 +234,7 @@ func createVMConfig(layout config.Layout) (*vz.VirtualMachineConfiguration, erro
 		return nil, fmt.Errorf("bootloader creation failed: %w", err)
 	}
 
-	config, err := vz.NewVirtualMachineConfiguration(bootLoader, uint(layout.Cpu), layout.Ram*1024*1024)
+	config, err := vz.NewVirtualMachineConfiguration(bootLoader, layout.Cpu, layout.Ram*1024*1024)
 
 	if err != nil {
 		return nil, fmt.Errorf("config creation failed: %w", err)
@@ -332,25 +331,27 @@ type diskMount struct {
 
 func newBlockDevice(path string, readOnly bool, cache vz.DiskImageCachingMode, sync vz.DiskImageSynchronizationMode) (vz.StorageDeviceConfiguration, error) {
 	attachment, err := vz.NewDiskImageStorageDeviceAttachmentWithCacheAndSync(path, readOnly, cache, sync)
-
 	if err != nil {
 		return nil, fmt.Errorf("failed to create disk %s attachment: %w", path, err)
 	}
 
-	return vz.NewVirtioBlockDeviceConfiguration(attachment)
+	cfg, err := vz.NewVirtioBlockDeviceConfiguration(attachment)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create disk %s configuration: %w", path, err)
+	}
+
+	return cfg, nil
 }
 
 func (vm *VirtualMachine) prepareDisks() error {
-	var mounts []diskMount
-	var storages []vz.StorageDeviceConfiguration
-
 	log.Debugf("root disk: %s", vm.layout.Root)
+
 	rootImage, err := newBlockDevice(vm.layout.Root.Resolved, true, vz.DiskImageCachingModeCached, vz.DiskImageSynchronizationModeNone)
 	if err != nil {
 		return fmt.Errorf("failed to create root disk %s configuration: %w", vm.layout.Root, err)
 	}
 
-	storages = append(storages, rootImage)
+	vm.storages = append(vm.storages, rootImage)
 
 	for _, label := range util.SortKeys(vm.layout.Disks) {
 		disk := vm.layout.Disks[label]
@@ -368,7 +369,7 @@ func (vm *VirtualMachine) prepareDisks() error {
 
 		stat, err := os.Stat(disk.Path.Resolved)
 
-		if errors.Is(err, os.ErrNotExist) || (err == nil && stat.Size() < int64(size)) {
+		if errors.Is(err, os.ErrNotExist) || (err == nil && stat.Size() < size) {
 			if err := setFileSize(disk.Path.Resolved, size); err != nil {
 				return fmt.Errorf("failed to create disk %s (%s): %w", label, disk.Path.Resolved, err)
 			}
@@ -383,8 +384,8 @@ func (vm *VirtualMachine) prepareDisks() error {
 			return fmt.Errorf("failed to create disk %s configuration: %w", label, err)
 		}
 
-		device := fmt.Sprintf("/dev/vd%c", 'a'+len(storages))
-		storages = append(storages, dev)
+		device := fmt.Sprintf("/dev/vd%c", 'a'+len(vm.storages))
+		vm.storages = append(vm.storages, dev)
 
 		dm := diskMount{
 			mountpoint: disk.Mount,
@@ -421,11 +422,8 @@ func (vm *VirtualMachine) prepareDisks() error {
 			},
 		}
 
-		mounts = append(mounts, dm)
+		vm.mounts = append(vm.mounts, dm)
 	}
-
-	vm.storages = append(vm.storages, storages...)
-	vm.mounts = append(vm.mounts, mounts...)
 
 	return nil
 }
@@ -439,7 +437,7 @@ func setFileSize(path string, size int64) error {
 
 	defer file.Close()
 
-	if err := file.Truncate(int64(size)); err != nil {
+	if err := file.Truncate(size); err != nil {
 		return fmt.Errorf("failed to truncate file %s: %w", path, err)
 	}
 
@@ -449,15 +447,13 @@ func setFileSize(path string, size int64) error {
 func fsidentifyAsync(size int64, path string) func() (*disk.Filesystem, error) {
 	return util.Await(func() (*disk.Filesystem, error) {
 		file, err := os.Open(path)
-
-		defer file.Close()
-
 		if err != nil {
 			return nil, fmt.Errorf("failed to open file %s: %w", path, err)
 		}
 
-		fs, err := disk.Identify(size, file)
+		defer file.Close()
 
+		fs, err := disk.Identify(size, file)
 		if err != nil {
 			return nil, fmt.Errorf("failed to identify filesystem: %w", err)
 		}
@@ -468,8 +464,6 @@ func fsidentifyAsync(size int64, path string) func() (*disk.Filesystem, error) {
 
 func (vm *VirtualMachine) setupShares() error {
 	shares := vm.layout.Shares
-	mounts := make([]diskMount, 0, len(shares))
-	confs := make([]vz.DirectorySharingDeviceConfiguration, 0, len(shares))
 	labels := make(map[string]bool)
 
 	for dst, share := range shares {
@@ -506,9 +500,9 @@ func (vm *VirtualMachine) setupShares() error {
 
 		fsconf.SetDirectoryShare(dirShare)
 
-		confs = append(confs, fsconf)
+		vm.shares = append(vm.shares, fsconf)
 
-		mounts = append(mounts, diskMount{
+		vm.mounts = append(vm.mounts, diskMount{
 			mountpoint: dst,
 			mountFunc: func(vm *VirtualMachine) error {
 				var args []string
@@ -525,9 +519,6 @@ func (vm *VirtualMachine) setupShares() error {
 			},
 		})
 	}
-
-	vm.shares = append(vm.shares, confs...)
-	vm.mounts = append(vm.mounts, mounts...)
 
 	return nil
 }

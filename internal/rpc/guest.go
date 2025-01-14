@@ -1,6 +1,7 @@
 package rpc
 
 import (
+	"fmt"
 	"io"
 	"net"
 	"net/rpc"
@@ -103,7 +104,7 @@ func ServeGuestAPI(g Guest, conn io.ReadWriteCloser) error {
 	server := rpc.NewServer()
 
 	if err := server.RegisterName("Guest", g); err != nil {
-		return err
+		return fmt.Errorf("failed to register guest API: %w", err)
 	}
 
 	server.ServeConn(conn)
@@ -120,49 +121,61 @@ func NewGuestClient(c *rpc.Client) Guest {
 }
 
 func (c *GuestClient) Init(req InitRequest, out *InitResponse) error {
+	//nolint:wrapcheck
 	return c.Call("Guest.Init", req, out)
 }
 
 func (c *GuestClient) Write(req WriteRequest, _ *struct{}) error {
+	//nolint:wrapcheck
 	return c.Call("Guest.Write", req, nil)
 }
 
 func (c *GuestClient) Mkdir(path string, _ *struct{}) error {
+	//nolint:wrapcheck
 	return c.Call("Guest.Mkdir", path, nil)
 }
 
 func (c *GuestClient) Mount(req MountRequest, _ *struct{}) error {
+	//nolint:wrapcheck
 	return c.Call("Guest.Mount", req, nil)
 }
 
 func (c *GuestClient) Run(req Command, out *CommandOutput) error {
+	//nolint:wrapcheck
 	return c.Call("Guest.Run", req, out)
 }
 
 func (c *GuestClient) Launch(req Command, out *int64) error {
+	//nolint:wrapcheck
 	return c.Call("Guest.Launch", req, out)
 }
 
 func (c *GuestClient) Wait(req string, out *int) error {
+	//nolint:wrapcheck
 	return c.Call("Guest.Wait", req, out)
 }
 
 func (c *GuestClient) Release(req string, _ *struct{}) error {
+	//nolint:wrapcheck
 	return c.Call("Guest.Release", req, nil)
 }
 
 func (c *GuestClient) Listen(req ListenRequest, _ *struct{}) error {
+	//nolint:wrapcheck
 	return c.Call("Guest.Listen", req, nil)
 }
 
 func (c *GuestClient) Shutdown(_ struct{}, _ *struct{}) error {
+	//nolint:wrapcheck
 	return c.Call("Guest.Shutdown", struct{}{}, nil)
 }
 
 func (c *GuestClient) Metrics(req []string, out *Metrics) error {
+	//nolint:wrapcheck
 	return c.Call("Guest.Metrics", req, out)
 }
 
 func (c *GuestClient) Signal(req SignalRequest, _ *struct{}) error {
+	//nolint:wrapcheck
 	return c.Call("Guest.Signal", req, nil)
 }

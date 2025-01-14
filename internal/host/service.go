@@ -23,7 +23,7 @@ func (n SystemdNotify) IsReady() bool {
 func ReadSDNotify(client *rpc.DatagramClient) (*SystemdNotify, error) {
 	bs, _, err := client.Read(8192)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to read from notify socket: %w", err)
 	}
 
 	rv := &SystemdNotify{Data: map[string]string{}}
@@ -96,11 +96,12 @@ func (vm *VirtualMachine) LaunchService(ctx context.Context, cmd rpc.Command) er
 			_ = recover()
 		}()
 
-		if err != nil {
+		switch {
+		case err != nil:
 			rc <- 1
-		} else if exit == 0 {
+		case exit == 0:
 			rc <- -1
-		} else {
+		default:
 			rc <- exit
 		}
 	}()
@@ -109,11 +110,12 @@ func (vm *VirtualMachine) LaunchService(ctx context.Context, cmd rpc.Command) er
 	case <-ctx.Done():
 		return fmt.Errorf("launch of %s timed out", cmd.Name)
 	case code := <-rc:
-		if code == 0 {
+		switch code {
+		case 0:
 			return nil
-		} else if code == -1 {
+		case -1:
 			return fmt.Errorf("service %s exited", cmd.Name)
-		} else {
+		default:
 			return fmt.Errorf("service %s exited with code %d", cmd.Name, code)
 		}
 	}

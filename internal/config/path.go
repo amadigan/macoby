@@ -58,6 +58,7 @@ func (p *Paths) UnmarshalJSON(data []byte) error {
 	paths := []*Path{}
 
 	if err := json.Unmarshal(data, &paths); err != nil {
+		//nolint:wrapcheck
 		return err
 	}
 
@@ -114,13 +115,13 @@ func (p *Path) ResolveOutputFile(env map[string]string, root string) (bool, erro
 
 		return true, nil
 	} else if err != nil && !os.IsNotExist(err) {
-		return false, err
+		return false, fmt.Errorf("failed to stat %s: %w", value, err)
 	}
 
 	dir := filepath.Dir(value)
 
 	if err := os.MkdirAll(dir, 0755); err != nil {
-		return false, err
+		return false, fmt.Errorf("failed to create directory %s: %w", dir, err)
 	}
 
 	p.Resolved = value
@@ -150,7 +151,7 @@ func resolveListenSocket(path, root string) (network string, addr string, err er
 	dir := filepath.Dir(path)
 
 	if err := os.MkdirAll(dir, 0755); err != nil {
-		return "", "", err
+		return "", "", fmt.Errorf("failed to create directory %s: %w", dir, err)
 	}
 
 	return "unix", path, nil
@@ -169,10 +170,10 @@ func (p *Path) ResolveOutputDir(env map[string]string, root string) error {
 
 	if stat, err := os.Stat(value); os.IsNotExist(err) {
 		if err := os.MkdirAll(value, 0755); err != nil {
-			return err
+			return fmt.Errorf("failed to create directory %s: %w", value, err)
 		}
 	} else if err != nil {
-		return err
+		return fmt.Errorf("failed to stat %s: %w", value, err)
 	} else if !stat.Mode().IsDir() {
 		return fmt.Errorf("not a directory: %s", value)
 	}

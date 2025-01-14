@@ -11,7 +11,7 @@ const MinSizeExt = 1024 + 0x88
 func IdentifyExt(file io.ReaderAt) (*Filesystem, error) {
 	bs := make([]byte, 0x88)
 	if _, err := file.ReadAt(bs, 1024); err != nil {
-		return nil, fmt.Errorf("failed to read ext superblock: %v", err)
+		return nil, fmt.Errorf("failed to read superblock: %w", err)
 	}
 
 	if bs[0x38] != 0x53 || bs[0x39] != 0xEF {

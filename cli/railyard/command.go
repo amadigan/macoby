@@ -2,6 +2,8 @@ package railyard
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 
 	"github.com/amadigan/macoby/internal/applog"
 	"github.com/amadigan/macoby/internal/config"
@@ -16,6 +18,7 @@ type Cli struct {
 	Docker     *command.DockerCli
 	Home       string
 	SearchPath string
+	Suffix     string
 	Config     *config.Layout
 	Env        map[string]string
 }
@@ -26,6 +29,11 @@ func (c *Cli) setup() error {
 	env[config.HomeEnv] = searchpath
 	c.Home = home
 	c.SearchPath = searchpath
+
+	if defaultHome := os.ExpandEnv(config.UserHomeDir); home != defaultHome {
+		c.Suffix = filepath.Base(home)
+	}
+
 	confPath := &config.Path{Original: fmt.Sprintf("${%s}/%s.jsonc", config.HomeEnv, config.Name)}
 
 	if !confPath.ResolveInputFile(env, home) {
@@ -57,6 +65,7 @@ func NewVMCommand(cli *Cli) *cobra.Command {
 	cmd.AddCommand(NewDebugCommand(cli))
 	cmd.AddCommand(NewEnableCommand(cli))
 	cmd.AddCommand(NewDisableCommand(cli))
+	cmd.AddCommand(NewSetupCommand(cli))
 
 	return cmd
 }

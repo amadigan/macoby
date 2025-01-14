@@ -1,6 +1,7 @@
 package rpc
 
 import (
+	"fmt"
 	"io"
 	"net"
 	"strings"
@@ -23,7 +24,7 @@ func ServeStreamProxy(conn net.Conn) {
 	parts := strings.SplitN(addr, ":", 2)
 
 	if len(parts) != 2 {
-		writeProxy(conn, "invalid address")
+		_ = writeProxy(conn, "invalid address")
 
 		return
 	}
@@ -31,24 +32,29 @@ func ServeStreamProxy(conn net.Conn) {
 	out, err := net.Dial(parts[0], parts[1])
 
 	if err != nil {
-		writeProxy(conn, err.Error())
+		_ = writeProxy(conn, err.Error())
 
 		return
 	}
 
 	defer out.Close()
 
-	writeProxy(conn, "")
+	if err := writeProxy(conn, ""); err != nil {
+		log.Errorf("Failed to write proxy response: %v", err)
+	}
 
-	go io.Copy(out, conn)
-	io.Copy(conn, out)
+	go func() {
+		_, _ = io.Copy(out, conn)
+	}()
+
+	_, _ = io.Copy(conn, out)
 }
 
 func readProxy(conn net.Conn) (string, error) {
 	buf := make([]byte, 2)
 
 	if _, err := conn.Read(buf); err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to read proxy size: %w", err)
 	}
 
 	size := int(buf[0])<<8 | int(buf[1])
@@ -56,7 +62,7 @@ func readProxy(conn net.Conn) (string, error) {
 	buf = make([]byte, size)
 
 	if _, err := conn.Read(buf); err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to read proxy data: %w", err)
 	}
 
 	return string(buf), nil
@@ -67,11 +73,11 @@ func writeProxy(conn net.Conn, data string) error {
 	buf := []byte{byte(size >> 8), byte(size)}
 
 	if _, err := conn.Write(buf); err != nil {
-		return err
+		return fmt.Errorf("failed to write proxy size: %w", err)
 	}
 
 	if _, err := conn.Write([]byte(data)); err != nil {
-		return err
+		return fmt.Errorf("failed to write proxy data: %w", err)
 	}
 
 	return nil

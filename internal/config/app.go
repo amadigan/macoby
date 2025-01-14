@@ -69,6 +69,7 @@ func LoadConfig(env map[string]string, home string) (*Layout, string, error) {
 	}
 
 	layout.SetDefaults()
+
 	if err := layout.ResolvePaths(env, home); err != nil {
 		return &layout, home, fmt.Errorf("failed to resolve paths: %w", err)
 	}

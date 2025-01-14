@@ -2,6 +2,7 @@ package disk
 
 import (
 	"encoding/binary"
+	"fmt"
 	"io"
 )
 
@@ -11,7 +12,7 @@ func IdentifyXfs(file io.ReaderAt) (*Filesystem, error) {
 	superblock := make([]byte, 512)
 
 	if _, err := file.ReadAt(superblock, 0); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to read superblock: %w", err)
 	}
 
 	if string(superblock[0x0:0x4]) != "XFSB" {

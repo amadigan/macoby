@@ -24,6 +24,7 @@ func (f *fieldValidator) Validate(bs []byte) error {
 	var m map[string]any
 
 	if err := json.Unmarshal(bs, &m); err != nil {
+		//nolint:wrapcheck
 		return err
 	}
 

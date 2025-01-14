@@ -129,6 +129,8 @@ func (l *Layout) UnmarshalJSON(data []byte) error {
 	}
 
 	type layout Layout
+
+	//nolint:wrapcheck
 	return json.Unmarshal(data, (*layout)(l))
 }
 
@@ -138,6 +140,8 @@ func (d *DiskImage) UnmarshalJSON(data []byte) error {
 	}
 
 	type diskImage DiskImage
+
+	//nolint:wrapcheck
 	return json.Unmarshal(data, (*diskImage)(d))
 }
 
@@ -154,6 +158,8 @@ func (d *DockerSocket) UnmarshalJSON(data []byte) error {
 	}
 
 	type dockerSocket DockerSocket
+
+	//nolint:wrapcheck
 	return json.Unmarshal(data, (*dockerSocket)(d))
 }
 
@@ -182,6 +188,8 @@ func (l *LogConfig) UnmarshalJSON(data []byte) error {
 	}
 
 	type logConfig LogConfig
+
+	//nolint:wrapcheck
 	return json.Unmarshal(data, (*logConfig)(l))
 }
 

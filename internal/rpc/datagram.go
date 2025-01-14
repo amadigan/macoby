@@ -45,6 +45,7 @@ func (d *DatagramProxy) Dial(spec DatagramSpec, _ *struct{}) error {
 		d.unx, err = net.DialUnix(spec.Network, spec.LocalUnix, spec.RemoteUnix)
 	}
 
+	//nolint:wrapcheck
 	return err
 }
 
@@ -64,6 +65,7 @@ func (d *DatagramProxy) Listen(spec DatagramSpec, _ *struct{}) error {
 		d.unx, err = net.ListenUnixgram(spec.Network, spec.LocalUnix)
 	}
 
+	//nolint:wrapcheck
 	return err
 }
 
@@ -76,6 +78,7 @@ func (d *DatagramProxy) Read(size int, out *Datagram) error {
 	if d.udp != nil {
 		n, addr, err := d.udp.ReadFromUDP(buf)
 		if err != nil {
+			//nolint:wrapcheck
 			return err
 		}
 
@@ -86,6 +89,7 @@ func (d *DatagramProxy) Read(size int, out *Datagram) error {
 	} else {
 		n, addr, err := d.unx.ReadFromUnix(buf)
 		if err != nil {
+			//nolint:wrapcheck
 			return err
 		}
 
@@ -190,6 +194,7 @@ func (d *DatagramClient) ReadFrom(b []byte) (int, net.Addr, error) {
 	var datagram Datagram
 
 	if err := d.client.Call("DatagramProxy.Read", len(b), &datagram); err != nil {
+		//nolint:wrapcheck
 		return 0, nil, err
 	}
 
@@ -208,6 +213,7 @@ func (d *DatagramClient) Read(size int) ([]byte, net.Addr, error) {
 	var datagram Datagram
 
 	if err := d.client.Call("DatagramProxy.Read", size, &datagram); err != nil {
+		//nolint:wrapcheck
 		return nil, nil, err
 	}
 
@@ -223,6 +229,7 @@ func (d *DatagramClient) Read(size int) ([]byte, net.Addr, error) {
 func (d *DatagramClient) Close() error {
 	_ = d.client.Call("DatagramProxy.Close", struct{}{}, nil)
 
+	//nolint:wrapcheck
 	return d.client.Close()
 }
 
@@ -231,14 +238,17 @@ func (d *DatagramClient) LocalAddr() net.Addr {
 }
 
 func (d *DatagramClient) SetDeadline(t time.Time) error {
+	//nolint:wrapcheck
 	return d.client.Call("DatagramProxy.SetDeadline", t, nil)
 }
 
 func (d *DatagramClient) SetReadDeadline(t time.Time) error {
+	//nolint:wrapcheck
 	return d.client.Call("DatagramProxy.SetReadDeadline", t, nil)
 }
 
 func (d *DatagramClient) SetWriteDeadline(t time.Time) error {
+	//nolint:wrapcheck
 	return d.client.Call("DatagramProxy.SetWriteDeadline", t, nil)
 }
 
@@ -247,11 +257,12 @@ func (d *DatagramClient) WriteTo(b []byte, addr net.Addr) (int, error) {
 
 	if udpAddr, ok := addr.(*net.UDPAddr); ok {
 		datagram.UDPAddr = udpAddr
-	} else {
-		datagram.UnixAddr = addr.(*net.UnixAddr)
+	} else if unixAddr, ok := addr.(*net.UnixAddr); ok {
+		datagram.UnixAddr = unixAddr
 	}
 
 	if err := d.client.Call("DatagramProxy.Write", datagram, nil); err != nil {
+		//nolint:wrapcheck
 		return 0, err
 	}
 
@@ -266,6 +277,7 @@ func DialUDP(client *rpc.Client, network string, laddr *net.UDPAddr, raddr *net.
 	}
 
 	if err := client.Call("DatagramProxy.Dial", spec, nil); err != nil {
+		//nolint:wrapcheck
 		return nil, err
 	}
 
@@ -279,6 +291,7 @@ func ListenUDP(client *rpc.Client, network string, laddr *net.UDPAddr) (net.Pack
 	}
 
 	if err := client.Call("DatagramProxy.Listen", spec, nil); err != nil {
+		//nolint:wrapcheck
 		return nil, err
 	}
 
@@ -293,6 +306,7 @@ func DialUnix(client *rpc.Client, network string, laddr *net.UnixAddr, raddr *ne
 	}
 
 	if err := client.Call("DatagramProxy.Dial", spec, nil); err != nil {
+		//nolint:wrapcheck
 		return nil, err
 	}
 
@@ -306,6 +320,7 @@ func ListenUnix(client *rpc.Client, network string, laddr *net.UnixAddr) (*Datag
 	}
 
 	if err := client.Call("DatagramProxy.Listen", spec, nil); err != nil {
+		//nolint:wrapcheck
 		return nil, err
 	}
 
