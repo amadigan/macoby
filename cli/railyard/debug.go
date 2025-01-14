@@ -44,6 +44,12 @@ func debugVM(ctx context.Context, cli *Cli) error {
 
 	layout := cli.Config
 
+	control := &host.ControlServer{
+		Layout: layout,
+		Home:   cli.Home,
+		Env:    cli.Env,
+	}
+
 	layout.Console = true
 
 	layout.SetDefaults()
@@ -123,6 +129,20 @@ func debugVM(ctx context.Context, cli *Cli) error {
 	}
 
 	log.Infof("dockerd started in %s", time.Since(start))
+
+	network, addr, err := layout.ControlSocket.ResolveListenSocket(cli.Env, cli.Home)
+	if err != nil {
+		return fmt.Errorf("failed to resolve listen socket %s:%s: %w", network, addr, err)
+	}
+
+	listener, err := net.Listen(network, addr)
+	if err != nil {
+		return fmt.Errorf("failed to listen on %s%s: %w", network, addr, err)
+	}
+
+	control.SetupServer()
+
+	go control.Serve(listener)
 
 	go monitorContainerd(ctx, vm)
 	go monitorDockerd(ctx, vm)
