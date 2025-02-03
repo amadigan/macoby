@@ -58,10 +58,6 @@ func debugVM(ctx context.Context, cli *Cli) error {
 	logChan := make(chan applog.Event, 100)
 	go debugLog(logChan)
 
-	eventHandler := func(event rpc.LogEvent) {
-		logChan <- applog.Event{Subsystem: event.Name, Data: event.Data}
-	}
-
 	if err := layout.ResolvePaths(cli.Env, cli.Home); err != nil {
 		return fmt.Errorf("failed to resolve paths: %w", err)
 	}
@@ -97,15 +93,31 @@ func debugVM(ctx context.Context, cli *Cli) error {
 		listeners = append(listeners, listener)
 	}
 
-	vm, err := host.NewVirtualMachine(*layout)
+	stateCh := make(chan host.DaemonState, 10)
 
+	vmstate, done, err := host.OpenDaemonState(layout.StateFile.Resolved, host.StatusStarting, stateCh)
 	if err != nil {
-		return fmt.Errorf("failed to create VM: %w", err)
+		close(stateCh)
+		return fmt.Errorf("failed to open daemon state: %w", err)
+	}
+
+	defer func() {
+		stateCh <- host.DaemonState{Status: host.StatusStopped}
+		close(stateCh)
+		<-done
+	}()
+
+	vm := &host.VirtualMachine{
+		Layout: *layout,
+		LogHandler: func(event rpc.LogEvent) {
+			logChan <- applog.Event{Subsystem: event.Name, Data: event.Data}
+		},
+		StateChannel: stateCh,
 	}
 
 	start := time.Now()
 
-	if err := vm.Start(eventHandler); err != nil {
+	if err := vm.Start(vmstate); err != nil {
 		return fmt.Errorf("failed to start VM: %w", err)
 	}
 
@@ -116,6 +128,8 @@ func debugVM(ctx context.Context, cli *Cli) error {
 			return fmt.Errorf("failed to marshal dockerd config: %w", err)
 		}
 	}
+
+	log.Infof("starting dockerd with config: %s", string(dockerdJson))
 
 	dockerdCmd := rpc.Command{
 		Name:  "dockerd",
@@ -140,9 +154,13 @@ func debugVM(ctx context.Context, cli *Cli) error {
 		return fmt.Errorf("failed to listen on %s%s: %w", network, addr, err)
 	}
 
+	defer listener.Close()
+
 	control.SetupServer()
 
-	go control.Serve(listener)
+	go func() {
+		_ = control.Serve(listener)
+	}()
 
 	go monitorContainerd(ctx, vm)
 	go monitorDockerd(ctx, vm)
@@ -156,6 +174,8 @@ func debugVM(ctx context.Context, cli *Cli) error {
 	<-ctx.Done()
 
 	log.Infof("Shutting down VM")
+
+	stateCh <- host.DaemonState{Status: host.StatusStopping}
 
 	if err := vm.Shutdown(); err != nil {
 		return fmt.Errorf("failed to shutdown VM: %w", err)

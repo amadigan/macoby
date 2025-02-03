@@ -1,11 +1,10 @@
-// railyard with compressed btrfs and ext4 volumes
+# default configuration for railyard
 {
-	"ram": 4096, // in MB, default 25% of total system memory
-	"cpu": 2, // number of CPUs, default all available
 	"disks": {
 		"docker": {
 			"mount": "/var/lib/docker",
-			"size": "20G",
+			# TODO make default logic based on total/available disk space
+			"size": "40G",
 			"fs": "btrfs",
 			"mkfs": [
 				"--mixed",
@@ -14,25 +13,9 @@
 				"--label", "docker"
 			],
 			"options": [
-				"defaults",
-				"noatime",
-				"nodiratime",
-				"compress=zstd:12",
+				"compress=zstd:3",
 			]
 		},
-		"volumes": {
-			"mount": "/var/lib/docker/volumes",
-			"size": "40G",
-			"fs": "ext4",
-			"mkfs": [
-				"-m", "0",
-				"-T", "ext4",
-				"-O", "uninit_bg",
-				// allow online resize up to 2TB
-				"-E", "lazy_itable_init=1,lazy_journal_init=1,resize=524288000",
-				"-F"
-			]
-		}
 	},
 	"shares": {
 		"/Users": "/Users",
@@ -43,18 +26,9 @@
 		"container": "/run/docker.sock"
 	},
 	"control": "run/vz.sock",
-	"logs": {
-		"dir": "logs",
-		"max-size": "10M",
-		"max-backups": 3,
-		"max-age": 7
+	"dockerd": {
+		"storage-driver": "btrfs",
 	},
-	"json-conf": {
-		"/etc/docker/daemon.json": {
-			"storage-driver": "btrfs",
-		}
-	},
-	"host-iface": "127.0.0.1", // or the name of the host interface to publish on e.g. en0
 	"sysctl": {
 		"net.ipv4.ip_forward": "1",
 		"net.ipv6.conf.all.forwarding": "1",

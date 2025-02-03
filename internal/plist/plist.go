@@ -10,6 +10,8 @@ import (
 type PropertyList map[string]any
 type Dict map[string]any
 type String string
+type Integer int64
+type Boolean bool
 type Array []any
 
 func (p PropertyList) MarshalXML(e *xml.Encoder, start xml.StartElement) error {
@@ -77,6 +79,28 @@ func (a Array) MarshalXML(e *xml.Encoder, start xml.StartElement) error {
 
 	if err := e.EncodeToken(el.End()); err != nil {
 		return fmt.Errorf("failed to encode array end element: %w", err)
+	}
+
+	return nil
+}
+
+func (i Integer) MarshalXML(e *xml.Encoder, start xml.StartElement) error {
+	el := xml.StartElement{Name: xml.Name{Local: "integer"}}
+	if err := e.EncodeElement(xml.CharData(fmt.Sprintf("%d", i)), el); err != nil {
+		return fmt.Errorf("failed to encode integer: %w", err)
+	}
+
+	return nil
+}
+
+func (b Boolean) MarshalXML(e *xml.Encoder, start xml.StartElement) error {
+	el := xml.StartElement{Name: xml.Name{Local: "true"}}
+	if !b {
+		el.Name.Local = "false"
+	}
+
+	if err := e.EncodeToken(el); err != nil {
+		return fmt.Errorf("failed to encode boolean: %w", err)
 	}
 
 	return nil

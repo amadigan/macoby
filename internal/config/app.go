@@ -1,11 +1,15 @@
 package config
 
 import (
+	_ "embed"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
+	"github.com/amadigan/macoby/internal/applog"
 	"github.com/amadigan/macoby/internal/util"
+	"gopkg.in/yaml.v2"
 )
 
 const Name = "railyard"
@@ -14,6 +18,8 @@ const Version = "0.1.0"
 const HomeEnv = "RAILYARD_HOME"
 const SysHomeDir = "/usr/local/share/railyard"
 const UserHomeDir = "${HOME}/Library/Application Support/railyard"
+
+var log = applog.New("config")
 
 func BuildHomePath(env map[string]string, path string) (string, string) {
 	paths := util.List[string]{}
@@ -32,7 +38,37 @@ func BuildHomePath(env map[string]string, path string) (string, string) {
 		}
 	}
 
+	// TODO this should be *after* the user's home directory
+	if ep, err := os.Executable(); err != nil {
+		log.Warnf("failed to get executable path: %v", err)
+	} else if ep, err = filepath.EvalSymlinks(ep); err != nil {
+		// TODO handle symlink permutations
+		log.Warnf("failed to resolve executable symlink: %v", err)
+	} else {
+		dir := filepath.Join(filepath.Dir(ep), "..", "share", Name)
+		if abs, err := filepath.Abs(dir); err == nil {
+			paths.PushBack(abs)
+		}
+	}
+
 	paths.PushBack(interpolate(UserHomeDir, env))
+
+	localpkgPrefix := env["LOCALPKG_PREFIX"]
+
+	if localpkgPrefix == "" {
+		localpkgPrefix = filepath.Join(env["HOME"], ".local")
+	}
+
+	paths.PushBack(filepath.Join(localpkgPrefix, "share", Name))
+
+	homebrewPrefix := env["HOMEBREW_PREFIX"]
+
+	if homebrewPrefix == "" {
+		homebrewPrefix = "/opt/homebrew" // /usr/local is already handled by SysHomeDir
+	}
+
+	paths.PushBack(filepath.Join(homebrewPrefix, "share", Name))
+
 	paths.PushBack(interpolate(SysHomeDir, env))
 
 	set := map[string]struct{}{}
@@ -53,19 +89,31 @@ func BuildHomePath(env map[string]string, path string) (string, string) {
 	return front, strings.Join(parts, ":")
 }
 
+//go:embed railyard.yaml
+var defaultConfig []byte
+
 func LoadConfig(env map[string]string, home string) (*Layout, string, error) {
 	home, searchpath := BuildHomePath(env, home)
 	env[HomeEnv] = searchpath
 
-	confPath := &Path{Original: "${RAILYARD_HOME}/railyard.jsonc"}
+	confPath := &Path{Original: fmt.Sprintf("${%s}/%s.yaml", HomeEnv, Name)}
+
+	var configBytes []byte
 
 	if !confPath.ResolveInputFile(env, home) {
-		return nil, home, fmt.Errorf("failed to find %s.jsonc", Name)
+		log.Infof("failed to resolved %s.yaml, using default config", Name)
+
+		configBytes = defaultConfig
+	} else if bs, err := os.ReadFile(confPath.Resolved); err != nil {
+		return nil, home, fmt.Errorf("failed to read %s: %w", confPath.Resolved, err)
+	} else {
+		configBytes = bs
 	}
 
 	var layout Layout
-	if err := util.ReadJsonConfig(confPath.Resolved, &layout); err != nil {
-		return nil, home, fmt.Errorf("failed to read railyard.json: %w", err)
+
+	if err := yaml.Unmarshal(configBytes, &layout); err != nil {
+		return nil, home, fmt.Errorf("failed to read parse %s: %w", confPath.Resolved, err)
 	}
 
 	layout.SetDefaults()

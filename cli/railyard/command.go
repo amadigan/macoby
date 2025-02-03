@@ -10,6 +10,7 @@ import (
 	"github.com/amadigan/macoby/internal/util"
 	"github.com/docker/cli/cli/command"
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 )
 
 var log = applog.New("railyard-cli")
@@ -34,15 +35,23 @@ func (c *Cli) setup() error {
 		c.Suffix = filepath.Base(home)
 	}
 
-	confPath := &config.Path{Original: fmt.Sprintf("${%s}/%s.jsonc", config.HomeEnv, config.Name)}
+	confPath := &config.Path{Original: fmt.Sprintf("${%s}/%s.yaml", config.HomeEnv, config.Name)}
 
 	if !confPath.ResolveInputFile(env, home) {
-		return fmt.Errorf("failed to find %s.jsonc", config.Name)
+		return fmt.Errorf("failed to find %s.yaml", config.Name)
 	}
 
+	log.Infof("Using config file: %s", confPath.Resolved)
+
 	var layout config.Layout
-	if err := util.ReadJsonConfig(confPath.Resolved, &layout); err != nil {
-		return fmt.Errorf("failed to read railyard.json: %w", err)
+
+	bs, err := os.ReadFile(confPath.Resolved)
+	if err != nil {
+		return fmt.Errorf("failed to read %s: %w", confPath.Resolved, err)
+	}
+
+	if err := yaml.Unmarshal(bs, &layout); err != nil {
+		return fmt.Errorf("failed to unmarshal %s: %w", confPath.Resolved, err)
 	}
 
 	layout.SetDefaults()

@@ -2,19 +2,29 @@ package railyard
 
 import (
 	"bytes"
+	"context"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"strings"
+	"time"
 
 	"github.com/amadigan/macoby/internal/config"
 	"github.com/amadigan/macoby/internal/plist"
 	"github.com/spf13/cobra"
 )
 
+type daemonOptions struct {
+	Debug bool
+}
+
 func NewEnableCommand(cli *Cli) *cobra.Command {
+	var do daemonOptions
+
 	cmd := &cobra.Command{
 		Use:   "enable",
 		Short: "Enable railyard daemon",
@@ -23,9 +33,11 @@ func NewEnableCommand(cli *Cli) *cobra.Command {
 				return err
 			}
 
-			return cli.enableDaemon()
+			return cli.enableDaemon(do)
 		},
 	}
+
+	cmd.Flags().BoolVarP(&do.Debug, "debug", "d", false, "Enable debug logging")
 
 	return cmd
 }
@@ -46,41 +58,19 @@ func NewDisableCommand(cli *Cli) *cobra.Command {
 	return cmd
 }
 
-func (cli *Cli) enableDaemon() error {
-	home, err := os.UserHomeDir()
+func (cli *Cli) enableDaemon(do daemonOptions) error {
+	ctl, err := cli.newLaunchdControl()
 	if err != nil {
-		return fmt.Errorf("failed to get user home directory: %w", err)
+		return err
 	}
 
-	user, err := user.Current()
+	plistBs, _, err := cli.generatePlist(do.Debug)
 	if err != nil {
-		return fmt.Errorf("failed to get current user: %w", err)
+		return err
 	}
 
-	plist, id, err := cli.generatePlist(cli.Suffix)
-	if err != nil {
-		return fmt.Errorf("failed to generate plist: %w", err)
-	}
-
-	plistPath := filepath.Join(home, "Library/LaunchAgents", id+".plist")
-
-	target := "gui/" + user.Uid + "/" + id
-
-	if bs, _ := os.ReadFile(plistPath); !bytes.Equal(bs, plist) {
-		_ = bootout(target)
-
-		//nolint:gosec
-		if err := os.WriteFile(plistPath, plist, 0644); err != nil {
-			return fmt.Errorf("failed to write plist: %w", err)
-		}
-
-		//nolint:gosec
-		cmd := exec.Command("launchctl", "bootstrap", "gui/"+user.Uid, plistPath)
-		out, err := cmd.CombinedOutput()
-
-		if err != nil {
-			return fmt.Errorf("failed to load %s: %s: %w", plistPath, string(out), err)
-		}
+	if err := ctl.Update(context.Background(), plistBs); err != nil {
+		return err
 	}
 
 	if err = cli.upsertContext(); err != nil {
@@ -93,13 +83,11 @@ func (cli *Cli) enableDaemon() error {
 }
 
 func bootout(serviceTarget string) error {
-	if exec.Command("launchctl", "print", serviceTarget) != nil {
-		// service is not loaded
-		return nil
-	}
-
-	if out, err := exec.Command("launchctl", "bootout", serviceTarget).CombinedOutput(); err != nil {
-		return fmt.Errorf("failed to unload %s: %s: %w", serviceTarget, string(out), err)
+	for exec.Command("launchctl", "print", serviceTarget) != nil {
+		log.Infof("unloading %s", serviceTarget)
+		if out, err := exec.Command("launchctl", "bootout", serviceTarget, "socket").CombinedOutput(); err != nil {
+			return fmt.Errorf("failed to unload %s: %s: %w", serviceTarget, string(out), err)
+		}
 	}
 
 	return nil
@@ -134,13 +122,13 @@ func (cli *Cli) disableDaemon() error {
 	return nil
 }
 
-func (cli *Cli) generatePlist(suffix string) ([]byte, string, error) {
+func (cli *Cli) generatePlist(debug bool) ([]byte, string, error) {
 	self, err := os.Executable()
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to get executable path: %w", err)
 	}
 
-	id := config.AppID + suffix
+	id := config.AppID + cli.Suffix
 
 	doc := plist.PropertyList{
 		"Label":   plist.String(id),
@@ -149,13 +137,15 @@ func (cli *Cli) generatePlist(suffix string) ([]byte, string, error) {
 			plist.String(fmt.Sprintf("%sd", config.Name)),
 			plist.String(fmt.Sprintf("%d", len(cli.Config.DockerSocket.HostPath))),
 		},
+		"ExitTimeOut": plist.Integer(35), //TODO: this should be based on the daemon's shutdown timeout
+		"ProcessType": plist.String("Interactive"),
 	}
 
 	if cli.SearchPath != defaultSearchPath() {
 		doc["EnvironmentVariables"] = plist.Dict{config.HomeEnv: plist.String(cli.SearchPath)}
 	}
 
-	if suffix != "" {
+	if debug {
 		doc["StandardOutPath"] = plist.String(filepath.Join(cli.Home, "railyard-daemon.out"))
 		doc["StandardErrorPath"] = plist.String(filepath.Join(cli.Home, "railyard-daemon.err"))
 	}
@@ -222,6 +212,7 @@ func socket(network, addr string) plist.Dict {
 	if network == "unix" {
 		return plist.Dict{
 			"SockPathName": plist.String(addr),
+			"SockPathMode": plist.Integer(0o600),
 		}
 	}
 
@@ -244,4 +235,106 @@ func socket(network, addr string) plist.Dict {
 
 func defaultSearchPath() string {
 	return os.ExpandEnv(config.UserHomeDir) + ":" + os.ExpandEnv(config.SysHomeDir)
+}
+
+type launchdControl struct {
+	domain string
+	label  string
+	path   string
+}
+
+func (cli *Cli) newLaunchdControl() (*launchdControl, error) {
+	id := config.AppID + cli.Suffix
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get user home directory: %w", err)
+	}
+
+	user, err := user.Current()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get current user: %w", err)
+	}
+
+	return &launchdControl{
+		domain: "gui/" + user.Uid,
+		label:  id,
+		path:   filepath.Join(home, "Library/LaunchAgents", id+".plist"),
+	}, nil
+}
+
+func run(cmd string, args ...string) error {
+	if out, err := exec.Command(cmd, args...).CombinedOutput(); err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			fullCmd := cmd + " " + strings.Join(args, " ")
+
+			return fmt.Errorf("%s exit status %d: %s (%w)", fullCmd, exitErr.ExitCode(), string(out), err)
+		} else {
+			return fmt.Errorf("failed to run %s: %w", cmd, err)
+		}
+	}
+
+	return nil
+}
+
+func (lc *launchdControl) Restart() error {
+	return run("launchctl", "kickstart", lc.domain+"/"+lc.label)
+}
+
+func (lc *launchdControl) Exists() bool {
+	return exec.Command("launchctl", "print", lc.domain+"/"+lc.label) == nil
+}
+
+func (lc *launchdControl) Unload(ctx context.Context) error {
+	if err := run("launchctl", "bootout", lc.domain+"/"+lc.label, "socket"); err != nil {
+		return err
+	}
+
+	for exec.Command("launchctl", "kill", "SIGTERM", lc.domain+"/"+lc.label) == nil {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(1 * time.Second):
+		}
+	}
+
+	return nil
+}
+
+func (lc *launchdControl) Load() error {
+	return run("launchctl", "bootstrap", lc.domain, lc.path)
+}
+
+func (lc *launchdControl) Remove(ctx context.Context) error {
+	if lc.Exists() {
+		if err := lc.Unload(ctx); err != nil {
+			return err
+		}
+	}
+
+	if err := os.Remove(lc.path); err != nil && !os.IsNotExist(err) {
+		log.Warnf("failed to remove %s: %w", lc.path, err)
+	}
+
+	return nil
+}
+
+func (lc *launchdControl) Update(ctx context.Context, data []byte) error {
+	if bs, _ := os.ReadFile(lc.path); !bytes.Equal(bs, data) {
+		if err := lc.Remove(ctx); err != nil && !os.IsNotExist(err) {
+			log.Warnf("failed to remove %s: %v", lc.path, err)
+		}
+
+		//nolint:gosec
+		if err := os.WriteFile(lc.path, data, 0644); err != nil {
+			return fmt.Errorf("failed to write %s: %w", lc.path, err)
+		}
+
+		return lc.Load()
+	} else if !lc.Exists() {
+		return lc.Load()
+	}
+
+	return nil
 }

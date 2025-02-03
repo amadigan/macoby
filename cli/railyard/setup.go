@@ -30,7 +30,7 @@ func runSetup(cli *Cli) error {
 		return fmt.Errorf("failed to create railyard directory %s: %w", cli.Home, err)
 	}
 
-	if err := cli.enableDaemon(); err != nil {
+	if err := cli.enableDaemon(daemonOptions{}); err != nil {
 		return fmt.Errorf("failed to enable railyard daemon: %w", err)
 	}
 

@@ -36,3 +36,13 @@ func SortKeys[K cmp.Ordered, V any](m map[K]V) []K {
 
 	return keys
 }
+
+func MapCopy[K comparable, V any](m map[K]V) map[K]V {
+	c := make(map[K]V, len(m))
+
+	for k, v := range m {
+		c[k] = v
+	}
+
+	return c
+}

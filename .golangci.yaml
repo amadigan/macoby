@@ -26,7 +26,6 @@ linters:
     - forcetypeassert
     - funlen
     - gocognit
-    - gocritic
     - gocyclo
     - godox
     - gofmt

@@ -2,6 +2,7 @@ package host
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -17,6 +18,7 @@ import (
 	"github.com/amadigan/macoby/internal/applog"
 	"github.com/amadigan/macoby/internal/config"
 	"github.com/amadigan/macoby/internal/rpc"
+	"github.com/amadigan/macoby/internal/util"
 	"github.com/bored-engineer/go-launchd"
 )
 
@@ -51,29 +53,66 @@ func RunDaemon(osArgs []string, env map[string]string) {
 		log.Fatal(err)
 	}
 
+	log.Infof("env: %+v", env)
+
 	if err := control.Layout.ResolvePaths(env, home); err != nil {
 		log.Fatal(fmt.Errorf("failed to resolve paths: %w", err))
 	}
 
-	if control.vm, err = NewVirtualMachine(*control.Layout); err != nil {
-		log.Fatal(fmt.Errorf("failed to create VM: %w", err))
+	stateCh := make(chan DaemonState, 10)
+
+	state, done, err := OpenDaemonState(control.Layout.StateFile.Resolved, StatusStarting, stateCh)
+	if err != nil {
+		close(stateCh)
+		log.Fatal(fmt.Errorf("failed to open daemon state: %w", err))
 	}
 
+	defer func() {
+		stateCh <- DaemonState{Status: StatusStopped}
+		close(stateCh)
+		<-done
+	}()
+
+	control.vm = &VirtualMachine{
+		Layout:       *control.Layout,
+		LogHandler:   control.handleLogEvent,
+		StateChannel: stateCh,
+	}
+
+	dockerJson := util.Await(func() ([]byte, error) {
+		if len(control.Layout.DockerConfig) > 0 {
+			return json.Marshal(control.Layout.DockerConfig)
+		}
+
+		return nil, nil
+	})
+
 	if err := control.ListenLaunchdControl(); err != nil {
-		log.Fatal(err)
+		log.Errorf("failed to listen on launchd control: %w", err)
+
+		return
 	}
 
 	defer control.Close()
 
 	start := time.Now()
 
-	if err := control.vm.Start(control.handleLogEvent); err != nil {
+	if err := control.vm.Start(state); err != nil {
 		log.Errorf("failed to start VM: %w", err)
 
 		return
 	}
 
-	dockerdCmd := rpc.Command{Name: "dockerd", Path: "/usr/bin/dockerd"}
+	dockerBs, err := dockerJson()
+	if err != nil {
+		log.Errorf("failed to get docker config: %w", err)
+
+		return
+	}
+
+	log.Infof("docker config: %s", string(dockerBs))
+
+	dockerdCmd := rpc.Command{Name: "dockerd", Path: "/usr/bin/dockerd", Input: dockerBs}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -99,9 +138,15 @@ func RunDaemon(osArgs []string, env map[string]string) {
 	}
 
 	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	signal.Notify(sigCh)
 
-	<-sigCh
+	for sig := range sigCh {
+		log.Infof("received signal %s", sig)
+
+		if sig == syscall.SIGINT || sig == syscall.SIGTERM {
+			break
+		}
+	}
 
 	log.Info("shutting down")
 }

@@ -9,8 +9,6 @@
 			"fs": "ext4",
 			"mkfs": [
 				"-m", "0",
-				"-b", "4096",
-				"-i", "1048576",
 				"-T", "ext4",
 				"-O", "uninit_bg",
 				// allow online resize up to 2TB

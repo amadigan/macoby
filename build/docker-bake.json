@@ -1,0 +1,82 @@
+{
+  "variable": {
+    "output_dir": {
+      "default": "dist"
+    },
+    "image_prefix": {
+      "default": ""
+    },
+    "go_version": {
+      "default": "1"
+    },
+    "gobuild_flags": {
+      "default": ""
+    },
+    "gobuild_ldflags": {
+      "default": ""
+    },
+    "zstd_level": {
+      "default": "3"
+    },
+    "cache_from": {
+      "default": ""
+    },
+    "cache_to": {
+      "default": ""
+    },
+    "docker_version": {
+      "default": ""
+    }
+  },
+  "group": {
+    "default": {
+      "targets": ["dist"]
+    }
+  },
+  "target": {
+    "dist": {
+      "dockerfile": "build/Dockerfile",
+      "output": ["type=local,dest=${output_dir}/"],
+      "args": {
+        "IMAGE_PREFIX": "${image_prefix}",
+        "GO_VERSION": "${go_version}",
+        "GOBUILD_FLAGS": "${gobuild_flags}",
+        "GOBUILD_LDFLAGS": "${gobuild_ldflags}",
+        "ZSTD_LEVEL": "${zstd_level}",
+        "DOCKER_VERSION": "${docker_version}"
+      },
+      "cache-from": ["${cache_from}"],
+      "cache-to": ["${cache_to}"]
+    },
+    "rootfs-arm64": {
+      "dockerfile": "build/Dockerfile",
+      "target": "rootfs-arm64",
+      "output": ["type=local,dest=${output_dir}/arm64/"],
+      "args": {
+        "IMAGE_PREFIX": "${image_prefix}",
+        "GO_VERSION": "${go_version}",
+        "GOBUILD_FLAGS": "${gobuild_flags}",
+        "GOBUILD_LDFLAGS": "${gobuild_ldflags}",
+        "ZSTD_LEVEL": "${zstd_level}",
+        "DOCKER_VERSION": "${docker_version}"
+      },
+      "cache-from": ["${cache_from}"],
+      "cache-to": ["${cache_to}"]
+    },
+    "rootfs-amd64": {
+      "dockerfile": "build/Dockerfile",
+      "target": "rootfs-amd64",
+      "output": ["type=local,dest=${output_dir}/amd64/"],
+      "args": {
+        "IMAGE_PREFIX": "${image_prefix}",
+        "GO_VERSION": "${go_version}",
+        "GOBUILD_FLAGS": "${gobuild_flags}",
+        "GOBUILD_LDFLAGS": "${gobuild_ldflags}",
+        "ZSTD_LEVEL": "${zstd_level}",
+        "DOCKER_VERSION": "${docker_version}"
+      },
+      "cache-from": ["${cache_from}"],
+      "cache-to": ["${cache_to}"]
+    }
+  }
+}

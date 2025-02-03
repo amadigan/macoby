@@ -10,32 +10,32 @@ import (
 )
 
 type Layout struct {
-	Ram           uint64                `json:"ram,omitempty"`
-	Cpu           uint                  `json:"cpu,omitempty"`
-	Kernel        *Path                 `json:"kernel,omitempty"`
-	Root          *Path                 `json:"root,omitempty"`
-	Disks         map[string]*DiskImage `json:"disks"`
-	Shares        map[string]*Share     `json:"shares"`
-	DockerSocket  DockerSocket          `json:"docker-socket"`
-	ControlSocket *Path                 `json:"control,omitempty"`
-	Sockets       map[string]string     `json:"sockets"`
-	Console       bool                  `json:"-"`
-	JsonConfigs   map[string]any        `json:"json-conf"`
-	HostIface     string                `json:"host-iface,omitempty"`
-	Sysctl        map[string]string     `json:"sysctl"`
-	StateFile     *Path                 `json:"state-file,omitempty"`
-	Log           LogConfig             `json:"logs"`
-	DockerConfig  map[string]any        `json:"dockerd"`
+	Ram           uint64                `json:"ram,omitempty" yaml:"ram,omitempty"`
+	Cpu           uint                  `json:"cpu,omitempty" yaml:"cpu,omitempty"`
+	Kernel        *Path                 `json:"kernel,omitempty" yaml:"kernel,omitempty"`
+	Root          *Path                 `json:"root,omitempty" yaml:"root,omitempty"`
+	Disks         map[string]*DiskImage `json:"disks" yaml:"disks"`
+	Shares        map[string]*Share     `json:"shares" yaml:"shares"`
+	DockerSocket  DockerSocket          `json:"docker-socket" yaml:"docker-socket"`
+	ControlSocket *Path                 `json:"control,omitempty" yaml:"control,omitempty"`
+	Sockets       map[string]string     `json:"sockets" yaml:"sockets"`
+	Console       bool                  `json:"-" yaml:"-"`
+	JsonConfigs   map[string]any        `json:"json-conf" yaml:"json-conf"`
+	HostIface     string                `json:"host-iface,omitempty" yaml:"host-iface,omitempty"`
+	Sysctl        map[string]string     `json:"sysctl" yaml:"sysctl"`
+	StateFile     *Path                 `json:"state-file,omitempty" yaml:"state-file,omitempty"`
+	Log           LogConfig             `json:"logs" yaml:"logs"`
+	DockerConfig  map[string]any        `json:"dockerd" yaml:"dockerd"`
 }
 
 type DiskImage struct {
-	Mount         string   `json:"mount"`
-	Size          string   `json:"size"`
-	FS            string   `json:"fs"`
-	FormatOptions []string `json:"mkfs"`
-	ReadOnly      bool     `json:"ro,omitempty"`
-	Options       []string `json:"opts"`
-	Path          *Path    `json:"path,omitempty"`
+	Mount         string   `json:"mount" yaml:"mount"`
+	Size          string   `json:"size" yaml:"size"`
+	FS            string   `json:"fs" yaml:"fs"`
+	FormatOptions []string `json:"mkfs" yaml:"mkfs"`
+	ReadOnly      bool     `json:"ro,omitempty" yaml:"ro,omitempty"`
+	Options       []string `json:"opts" yaml:"opts"`
+	Path          *Path    `json:"path,omitempty" yaml:"path,omitempty"`
 }
 
 type DockerSocket struct {

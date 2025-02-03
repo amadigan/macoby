@@ -38,6 +38,8 @@ type Logger struct {
 
 var logger = log.New(os.Stderr, "", 0)
 
+var LogFormat = "%s %s %s: "
+
 func Log(level LogLevel, when time.Time, pkg string, msg string, args ...any) {
 	if minLogLevel.Load() > int32(level) {
 		return
@@ -50,7 +52,7 @@ func Log(level LogLevel, when time.Time, pkg string, msg string, args ...any) {
 
 	nargs = append(nargs, args...)
 
-	logger.Printf("%s %s %s: "+msg, nargs...)
+	logger.Printf(LogFormat+msg, nargs...)
 }
 
 func SetOutput(w io.Writer) {

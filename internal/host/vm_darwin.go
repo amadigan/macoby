@@ -19,22 +19,13 @@ import (
 	"github.com/amadigan/macoby/internal/util"
 )
 
-type VMState int
-
-const (
-	VMStateCreating VMState = iota
-	VMStateBooting
-	VMStateInit
-	VMStateReady
-	VMStateStopping
-	VMStateStopped
-)
-
 type guestCommand func(*VirtualMachine) error
 
 type VirtualMachine struct {
-	state        VMState
-	layout       config.Layout
+	Layout       config.Layout
+	StateChannel chan<- DaemonState
+	LogHandler   func(rpc.LogEvent)
+
 	vm           *vz.VirtualMachine
 	vsock        *vz.VirtioSocketDevice
 	rpcConn      net.Conn
@@ -44,41 +35,27 @@ type VirtualMachine struct {
 	storages     []vz.StorageDeviceConfiguration
 	inits        []guestCommand
 	initResponse rpc.InitResponse
-
-	listeners map[net.Listener]struct{}
+	listeners    map[net.Listener]struct{}
 
 	mutex sync.RWMutex
 }
 
-func NewVirtualMachine(layout config.Layout) (*VirtualMachine, error) {
-	vm := &VirtualMachine{
-		state:     VMStateCreating,
-		layout:    layout,
-		listeners: make(map[net.Listener]struct{}),
-	}
-
-	return vm, nil
-}
-
-func (vm *VirtualMachine) Start(handler func(rpc.LogEvent)) error {
-	configs := prepareConfigsAsync(vm.layout)
+func (vm *VirtualMachine) Start(state DaemonState) error {
+	vm.listeners = make(map[net.Listener]struct{})
+	configs := prepareConfigsAsync(vm.Layout)
 
 	log.Debug("creating VM config")
 
-	config, err := createVMConfig(vm.layout)
+	config, err := vm.createVMConfig()
 	if err != nil {
 		return err
 	}
 
 	log.Debug("setting up VM base")
 
-	if err := setupVMBase(config); err != nil {
+	if err := setupVMBase(config, &state); err != nil {
 		return err
 	}
-
-	var state VirtualMachineState
-
-	_ = util.ReadJsonConfig(vm.layout.StateFile.Resolved, &state)
 
 	log.Debug("setting up VM network")
 
@@ -117,25 +94,25 @@ func (vm *VirtualMachine) Start(handler func(rpc.LogEvent)) error {
 		return fmt.Errorf("failed to create virtual machine: %w", err)
 	}
 
-	bs, err := json.Marshal(state)
-	if err != nil {
-		return fmt.Errorf("failed to marshal state: %w", err)
-	}
-
-	//nolint:gosec
-	if err := os.WriteFile(vm.layout.StateFile.Resolved, bs, 0644); err != nil {
-		log.Warnf("failed to write state: %s", err)
-	}
-
 	log.Debug("starting VM")
 
 	if err := vm.vm.Start(); err != nil {
 		return fmt.Errorf("failed to start virtual machine: %w", err)
 	}
 
-	if _, ok := <-vm.vm.StateChangedNotify(); !ok {
+	vst, ok := <-vm.vm.StateChangedNotify()
+
+	if !ok {
 		return errors.New("state channel closed")
 	}
+
+	log.Debugf("VM state: %s", vst)
+
+	go func() {
+		for state := range vm.vm.StateChangedNotify() {
+			log.Debugf("VM state: %s", state)
+		}
+	}()
 
 	if socks := vm.vm.SocketDevices(); len(socks) > 0 {
 		vm.vsock = socks[0]
@@ -161,7 +138,7 @@ func (vm *VirtualMachine) Start(handler func(rpc.LogEvent)) error {
 		log.Debug("listening for guest events")
 
 		for event := range rpc.NewReceiver(eventStream, 32) {
-			handler(event)
+			vm.LogHandler(event)
 		}
 	}()
 
@@ -179,11 +156,13 @@ func (vm *VirtualMachine) Start(handler func(rpc.LogEvent)) error {
 
 	log.Debug("sending init request")
 
-	if err := vm.client.Init(rpc.InitRequest{OverlaySize: 8 * 1024 * 1024, Sysctl: vm.layout.Sysctl}, &result); err != nil {
+	if err := vm.client.Init(rpc.InitRequest{OverlaySize: 64 * 1024 * 1024, Sysctl: vm.Layout.Sysctl}, &result); err != nil {
 		return fmt.Errorf("failed to initialize guest: %w", err)
 	}
 
 	log.Debugf("init response: %v", result)
+
+	state.IPv4Address = result.IPv4.String()
 
 	confFiles, err := configs()
 	if err != nil {
@@ -217,30 +196,33 @@ func (vm *VirtualMachine) Start(handler func(rpc.LogEvent)) error {
 		}
 	}
 
+	vm.StateChannel <- state
+
 	return nil
 }
 
-func createVMConfig(layout config.Layout) (*vz.VirtualMachineConfiguration, error) {
-	cmdline := []string{"console=hvc0", "root=/dev/vda"}
+func (vm *VirtualMachine) createVMConfig() (*vz.VirtualMachineConfiguration, error) {
+	cmdline := []string{"root=/dev/vda"}
 
-	if !layout.Console {
-		cmdline[0] = "console=ttysnull"
-		cmdline = append(cmdline, "quiet")
+	if !vm.Layout.Console {
+		cmdline = append(cmdline, "quiet", "console=ttysnull")
+	} else {
+		cmdline = append(cmdline, "console=hvc0")
 	}
 
-	bootLoader, err := vz.NewLinuxBootLoader(layout.Kernel.Resolved, vz.WithCommandLine(strings.Join(cmdline, " ")))
+	bootLoader, err := vz.NewLinuxBootLoader(vm.Layout.Kernel.Resolved, vz.WithCommandLine(strings.Join(cmdline, " ")))
 
 	if err != nil {
 		return nil, fmt.Errorf("bootloader creation failed: %w", err)
 	}
 
-	config, err := vz.NewVirtualMachineConfiguration(bootLoader, layout.Cpu, layout.Ram*1024*1024)
+	config, err := vz.NewVirtualMachineConfiguration(bootLoader, vm.Layout.Cpu, vm.Layout.Ram*1024*1024)
 
 	if err != nil {
 		return nil, fmt.Errorf("config creation failed: %w", err)
 	}
 
-	if layout.Console {
+	if vm.Layout.Console {
 		serialPortAttachment, err := vz.NewFileHandleSerialPortAttachment(os.Stdin, os.Stdout)
 		if err != nil {
 			return nil, fmt.Errorf("Serial port attachment creation failed: %w", err)
@@ -256,7 +238,7 @@ func createVMConfig(layout config.Layout) (*vz.VirtualMachineConfiguration, erro
 	return config, nil
 }
 
-func setupVMBase(config *vz.VirtualMachineConfiguration) error {
+func setupVMBase(config *vz.VirtualMachineConfiguration, state *DaemonState) error {
 	if entropyConfig, err := vz.NewVirtioEntropyDeviceConfiguration(); err == nil {
 		config.SetEntropyDevicesVirtualMachineConfiguration(util.SliceOf(entropyConfig))
 	} else {
@@ -275,10 +257,50 @@ func setupVMBase(config *vz.VirtualMachineConfiguration) error {
 		return fmt.Errorf("failed to create virtio socket device configuration: %w", err)
 	}
 
+	var machineID *vz.GenericMachineIdentifier
+
+	if len(state.MachineID) > 0 {
+		var err error
+		machineID, err = vz.NewGenericMachineIdentifierWithData(state.MachineID)
+
+		if err != nil {
+			log.Warnf("failed to parse machine ID: %s", err)
+		}
+	}
+
+	if machineID == nil {
+		var err error
+		machineID, err = vz.NewGenericMachineIdentifier()
+		if err != nil {
+			log.Warnf("failed to create random machine ID: %s", err)
+		} else {
+			state.MachineID = machineID.DataRepresentation()
+		}
+	}
+
+	if machineID != nil {
+		platform, err := vz.NewGenericPlatformConfiguration(vz.WithGenericMachineIdentifier(machineID))
+		if err != nil {
+			return fmt.Errorf("failed to create platform configuration: %w", err)
+		}
+
+		if vz.IsNestedVirtualizationSupported() {
+			if err := platform.SetNestedVirtualizationEnabled(true); err != nil {
+				log.Warnf("failed to enable nested virtualization: %s", err)
+			}
+		}
+
+		config.SetPlatformVirtualMachineConfiguration(platform)
+	}
+
 	return nil
 }
 
-func setupVMNetwork(config *vz.VirtualMachineConfiguration, state *VirtualMachineState) error {
+func ptr[T any](v T) *T {
+	return &v
+}
+
+func setupVMNetwork(config *vz.VirtualMachineConfiguration, state *DaemonState) error {
 	var macAddr *vz.MACAddress
 
 	if state.MACAddress == "" {
@@ -344,17 +366,17 @@ func newBlockDevice(path string, readOnly bool, cache vz.DiskImageCachingMode, s
 }
 
 func (vm *VirtualMachine) prepareDisks() error {
-	log.Debugf("root disk: %s", vm.layout.Root)
+	log.Debugf("root disk: %s", vm.Layout.Root)
 
-	rootImage, err := newBlockDevice(vm.layout.Root.Resolved, true, vz.DiskImageCachingModeCached, vz.DiskImageSynchronizationModeNone)
+	rootImage, err := newBlockDevice(vm.Layout.Root.Resolved, true, vz.DiskImageCachingModeCached, vz.DiskImageSynchronizationModeNone)
 	if err != nil {
-		return fmt.Errorf("failed to create root disk %s configuration: %w", vm.layout.Root, err)
+		return fmt.Errorf("failed to create root disk %s configuration: %w", vm.Layout.Root, err)
 	}
 
 	vm.storages = append(vm.storages, rootImage)
 
-	for _, label := range util.SortKeys(vm.layout.Disks) {
-		disk := vm.layout.Disks[label]
+	for _, label := range util.SortKeys(vm.Layout.Disks) {
+		disk := vm.Layout.Disks[label]
 		if disk.Mount == "" {
 			continue
 		}
@@ -463,7 +485,7 @@ func fsidentifyAsync(size int64, path string) func() (*disk.Filesystem, error) {
 }
 
 func (vm *VirtualMachine) setupShares() error {
-	shares := vm.layout.Shares
+	shares := vm.Layout.Shares
 	labels := make(map[string]bool)
 
 	for dst, share := range shares {
