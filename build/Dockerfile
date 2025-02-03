@@ -35,7 +35,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked --mount=type=cache,t
     crossbuild-essential-arm64 gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
     ncurses-dev libssl-dev libelf-dev xz-utils
 WORKDIR /src
-ARG KERNEL_VERSION=6.12.11
+ARG KERNEL_VERSION=6.13.1
 ADD --link https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-${KERNEL_VERSION}.tar.xz /linux.tar.xz
 RUN tar --strip-components=1 -xJf /linux.tar.xz
 

@@ -149,6 +149,10 @@ func debugVM(ctx context.Context, cli *Cli) error {
 		return fmt.Errorf("failed to resolve listen socket %s:%s: %w", network, addr, err)
 	}
 
+	if network == "unix" {
+		_ = os.Remove(addr)
+	}
+
 	listener, err := net.Listen(network, addr)
 	if err != nil {
 		return fmt.Errorf("failed to listen on %s%s: %w", network, addr, err)

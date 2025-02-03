@@ -14,8 +14,6 @@ Makefile
 docs/
 .DS_Store
 /internal/host/
-/internal/disk/
-/internal/plist/
 /cli/
 /cmd/
 /configs/

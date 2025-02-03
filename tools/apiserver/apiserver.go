@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/amadigan/macoby/internal/config"
 	"github.com/amadigan/macoby/internal/host"
+	"github.com/amadigan/macoby/internal/host/config"
 	"github.com/amadigan/macoby/internal/util"
 )
 

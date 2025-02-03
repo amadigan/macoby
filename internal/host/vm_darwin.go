@@ -13,8 +13,8 @@ import (
 	"sync"
 
 	"github.com/Code-Hex/vz/v3"
-	"github.com/amadigan/macoby/internal/config"
-	"github.com/amadigan/macoby/internal/disk"
+	"github.com/amadigan/macoby/internal/host/config"
+	"github.com/amadigan/macoby/internal/host/disk"
 	"github.com/amadigan/macoby/internal/rpc"
 	"github.com/amadigan/macoby/internal/util"
 )

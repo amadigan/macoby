@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 
 	"github.com/amadigan/macoby/internal/applog"
-	"github.com/amadigan/macoby/internal/config"
+	"github.com/amadigan/macoby/internal/host/config"
 	"github.com/amadigan/macoby/internal/util"
 	"github.com/docker/cli/cli/command"
 	"github.com/spf13/cobra"

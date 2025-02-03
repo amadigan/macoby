@@ -13,8 +13,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/amadigan/macoby/internal/config"
-	"github.com/amadigan/macoby/internal/plist"
+	"github.com/amadigan/macoby/internal/host/config"
+	"github.com/amadigan/macoby/internal/host/plist"
 	"github.com/spf13/cobra"
 )
 

@@ -16,7 +16,7 @@ import (
 	"time"
 
 	"github.com/amadigan/macoby/internal/applog"
-	"github.com/amadigan/macoby/internal/config"
+	"github.com/amadigan/macoby/internal/host/config"
 	"github.com/amadigan/macoby/internal/rpc"
 	"github.com/amadigan/macoby/internal/util"
 	"github.com/bored-engineer/go-launchd"
@@ -112,7 +112,12 @@ func RunDaemon(osArgs []string, env map[string]string) {
 
 	log.Infof("docker config: %s", string(dockerBs))
 
-	dockerdCmd := rpc.Command{Name: "dockerd", Path: "/usr/bin/dockerd", Input: dockerBs}
+	dockerdCmd := rpc.Command{
+		Name:  "dockerd",
+		Path:  "/usr/bin/dockerd",
+		Args:  []string{"dockerd", "--config-file", "/proc/self/fd/0"},
+		Input: dockerBs,
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

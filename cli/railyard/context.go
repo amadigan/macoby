@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/amadigan/macoby/internal/config"
+	"github.com/amadigan/macoby/internal/host/config"
 	"github.com/containerd/errdefs"
 	"github.com/docker/cli/cli/command"
 	dcontext "github.com/docker/cli/cli/context"
@@ -44,6 +44,7 @@ func (cli *Cli) upsertContext() error {
 		}
 	} else {
 		meta.Name = name
+		meta.Endpoints = map[string]any{}
 	}
 
 	dm := meta.Endpoints[docker.DockerEndpoint]
