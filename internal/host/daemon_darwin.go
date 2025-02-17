@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -16,6 +15,8 @@ import (
 	"time"
 
 	"github.com/amadigan/macoby/internal/applog"
+	"github.com/amadigan/macoby/internal/controlsock"
+	"github.com/amadigan/macoby/internal/event"
 	"github.com/amadigan/macoby/internal/host/config"
 	"github.com/amadigan/macoby/internal/rpc"
 	"github.com/amadigan/macoby/internal/util"
@@ -39,13 +40,20 @@ func RunDaemon(osArgs []string, env map[string]string) {
 		panic(err)
 	}
 
+	listener, err := controlsock.ListenSocket(home)
+	if err != nil {
+		panic(err)
+	}
+
 	control := &ControlServer{
 		Layout: layout,
 		Home:   home,
 		Env:    env,
 	}
 
-	if err := control.SetupLogging(); err != nil {
+	ctx := event.NewBus(context.Background())
+
+	if err := control.SetupLogging(ctx); err != nil {
 		panic(err)
 	}
 
@@ -73,9 +81,9 @@ func RunDaemon(osArgs []string, env map[string]string) {
 		<-done
 	}()
 
-	control.vm = &VirtualMachine{
+	vm := &VirtualMachine{
 		Layout:       *control.Layout,
-		LogHandler:   control.handleLogEvent,
+		LogChannel:   control.LogChannel,
 		StateChannel: stateCh,
 	}
 
@@ -87,17 +95,19 @@ func RunDaemon(osArgs []string, env map[string]string) {
 		return nil, nil
 	})
 
-	if err := control.ListenLaunchdControl(); err != nil {
-		log.Errorf("failed to listen on launchd control: %w", err)
+	control.SetupServer(ctx, vm)
 
-		return
-	}
+	go func() {
+		if err := control.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Errorf("failed to serve control: %w", err)
+		}
+	}()
 
 	defer control.Close()
 
 	start := time.Now()
 
-	if err := control.vm.Start(state); err != nil {
+	if err := control.vm.Start(ctx, state); err != nil {
 		log.Errorf("failed to start VM: %w", err)
 
 		return
@@ -119,7 +129,7 @@ func RunDaemon(osArgs []string, env map[string]string) {
 		Input: dockerBs,
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
 	if err := control.vm.LaunchService(ctx, dockerdCmd); err != nil {
@@ -129,6 +139,8 @@ func RunDaemon(osArgs []string, env map[string]string) {
 	}
 
 	log.Infof("dockerd started in %s", time.Since(start))
+
+	control.vm.UpdateStatus(ctx, event.StatusReady)
 
 	if len(osArgs) > 1 {
 		if sockCount, err := strconv.Atoi(osArgs[1]); err == nil {
@@ -140,6 +152,10 @@ func RunDaemon(osArgs []string, env map[string]string) {
 		}
 	} else {
 		log.Warn("no socket count specified")
+	}
+
+	if err := control.vm.client.GC(struct{}{}, nil); err != nil {
+		log.Errorf("failed to GC: %w", err)
 	}
 
 	sigCh := make(chan os.Signal, 1)
@@ -156,7 +172,7 @@ func RunDaemon(osArgs []string, env map[string]string) {
 	log.Info("shutting down")
 }
 
-func (cs *ControlServer) SetupLogging() error {
+func (cs *ControlServer) SetupLogging(ctx context.Context) error {
 	if err := cs.Layout.Log.Directory.ResolveOutputDir(cs.Env, cs.Home); err != nil {
 		return fmt.Errorf("failed to resolve log directory: %w", err)
 	}
@@ -170,41 +186,66 @@ func (cs *ControlServer) SetupLogging() error {
 		Root:        cs.Layout.Log.Directory.Resolved,
 	}
 
-	logChan := make(chan applog.Event, 100)
+	logChan := make(chan applog.Message, 100)
 
-	if ok, err := cs.Logs.Open(logChan); !ok {
+	files, err := cs.Logs.Open(ctx, logChan)
+
+	if err != nil {
 		return fmt.Errorf("failed to open log directory: %w", err)
 	}
 
-	emitter := applog.NewEmitter(32, applog.AllEvents(logChan))
-	cs.Emitter = emitter
+	cs.logFiles = make(map[string]*util.List[applog.LogFile], len(cs.Logs.Streams)+1)
 
-	applog.SetOutput(emitter.Writer("daemon"))
+	for stream, logFile := range files {
+		cs.logFiles[stream] = util.NewList(logFile)
+	}
+
+	openCh := make(chan event.TypedEnvelope[event.OpenLogFile], 10)
+	deleteCh := make(chan event.TypedEnvelope[event.DeleteLogFile], 10)
+
+	go func() {
+		for openEv := range openCh {
+			cs.addLogFile(openEv.Event.Stream, openEv.Event.Path)
+		}
+	}()
+
+	go func() {
+		for deleteEv := range deleteCh {
+			cs.removeLogFile(deleteEv.Event.Stream, deleteEv.Event.Path)
+		}
+	}()
+
+	cs.LogChannel = logChan
+
+	applog.SetOutput(applog.NewMessageChanWriter("daemon", logChan))
 
 	return nil
 }
 
-func (cs *ControlServer) ListenLaunchdControl() error {
-	cs.SetupServer()
+func (cs *ControlServer) addLogFile(stream string, path string) {
+	cs.mutex.Lock()
+	defer cs.mutex.Unlock()
 
-	socks, err := launchd.Sockets("control")
-	if err != nil {
-		return fmt.Errorf("failed to get control socket: %w", err)
+	if files, ok := cs.logFiles[stream]; ok {
+		files.PushFront(applog.LogFile{Path: path})
+	} else {
+		cs.logFiles[stream] = util.NewList(applog.LogFile{Path: path})
 	}
+}
 
-	cs.ControlSockets = socks
+func (cs *ControlServer) removeLogFile(stream string, path string) {
+	cs.mutex.Lock()
+	defer cs.mutex.Unlock()
 
-	for _, sock := range socks {
-		log.Infof("control listening on %s", sock.Addr())
+	if files, ok := cs.logFiles[stream]; ok {
+		for file, node := range files.Cursor() {
+			if file.Path == path {
+				node.Remove()
 
-		go func(sock net.Listener) {
-			if err := cs.Serve(sock); err != nil && !errors.Is(err, http.ErrServerClosed) {
-				log.Errorf("failed to serve control: %w", err)
+				break
 			}
-		}(sock)
+		}
 	}
-
-	return nil
 }
 
 func (cs *ControlServer) ForwardLaunchdDockerSockets(count int) error {
@@ -222,19 +263,4 @@ func (cs *ControlServer) ForwardLaunchdDockerSockets(count int) error {
 	}
 
 	return nil
-}
-
-func (cs *ControlServer) handleLogEvent(event rpc.LogEvent) {
-	cs.Emitter.Emit(event.Name, event.Data)
-}
-
-func (cs *ControlServer) Close() {
-	for _, sock := range cs.ControlSockets {
-		sock.Close()
-	}
-
-	// last thing to close
-	if cs.Emitter != nil {
-		cs.Emitter.Close()
-	}
 }

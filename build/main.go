@@ -8,6 +8,7 @@ import (
 	"path"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 
@@ -19,7 +20,7 @@ func init() {
 	applog.LogFormat = ">>>> %s %s %s\n"
 }
 
-func main() {
+func parseFlags(ctx context.Context) error {
 	var archFlag string
 	var reuseFlag bool
 	var outputDir string
@@ -35,11 +36,68 @@ func main() {
 	flag.Parse()
 
 	if od, err := filepath.Abs(outputDir); err != nil {
-		panic(err)
+		logf(ctx, applog.LogLevelError, "failed to get absolute path for %s: %v", outputDir, err)
 	} else {
 		buildPlan.outputDir = od
 	}
 
+	allArchitectures := parseArchFlag(archFlag)
+
+	return buildPlan.prepare(ctx, reuseFlag, flag.Args(), allArchitectures)
+}
+
+func main() {
+	ctx := context.WithValue(context.Background(), ctxkeyTask, task{name: "main"})
+	if err := parseFlags(ctx); err != nil {
+		logf(ctx, applog.LogLevelError, "failed to parse flags: %v", err)
+
+		os.Exit(1)
+	}
+
+	entries := make([]string, 0, len(buildPlan.targets))
+
+	for key, value := range buildPlan.targets {
+		entries = append(entries, fmt.Sprintf("%s (%s)", key, strings.Join(util.MapKeys(value), ", ")))
+	}
+
+	logf(ctx, applog.LogLevelInfo, "Targets to build: %s", strings.Join(entries, ", "))
+	logf(ctx, applog.LogLevelInfo, "Output directory: %s", buildPlan.outputDir)
+	logf(ctx, applog.LogLevelInfo, "Build root: %s", buildPlan.root)
+	logf(ctx, applog.LogLevelInfo, "Max compression: %v", buildPlan.maxCompression)
+	logf(ctx, applog.LogLevelInfo, "Dry run: %v", buildPlan.dryrun)
+
+	if buildPlan.dryrun {
+		return
+	}
+
+	if err := os.Chdir(buildPlan.root); err != nil {
+		logf(ctx, applog.LogLevelError, "failed to change directory: %v", err)
+	}
+
+	defer buildPlan.shutdown(ctx)
+
+	wg, err := startBuild(ctx)
+	if err != nil {
+		logf(ctx, applog.LogLevelError, "failed to start build: %v", err)
+	}
+
+	logDone := make(chan struct{})
+
+	go func() {
+		defer close(logDone)
+		logLoop()
+	}()
+
+	wg.Wait()
+	close(buildPlan.logchan)
+	<-logDone
+
+	if err := buildPlan.checkError(); err != nil {
+		logf(ctx, applog.LogLevelError, "build failed: %v", err)
+	}
+}
+
+func parseArchFlag(archFlag string) []string {
 	allArchitectures := []string{"amd64", "arm64"}
 
 	switch archFlag {
@@ -50,11 +108,13 @@ func main() {
 		for i, arch := range allArchitectures {
 			if arch == runtime.GOARCH {
 				allArchitectures = append(allArchitectures[:i], allArchitectures[i+1:]...)
+
 				break
 			}
 		}
 	default:
 		found := false
+
 		for _, arch := range allArchitectures {
 			if arch == archFlag {
 				found = true
@@ -70,86 +130,17 @@ func main() {
 		allArchitectures = []string{archFlag}
 	}
 
-	buildPlan.prepare(reuseFlag, flag.Args(), allArchitectures)
-
-	fmt.Println("Targets to build:")
-
-	for key, value := range buildPlan.targets {
-		fmt.Printf("  %s: %v\n", key, util.MapKeys(value))
-	}
-
-	fmt.Printf("Output directory: %s\n", buildPlan.outputDir)
-	fmt.Printf("Root directory: %s\n", buildPlan.root)
-	fmt.Printf("Max Compression: %v\n", buildPlan.maxCompression)
-	fmt.Printf("Dry Run: %v\n", buildPlan.dryrun)
-
-	if buildPlan.dryrun {
-		return
-	}
-
-	if err := os.Chdir(buildPlan.root); err != nil {
-		panic(err)
-	}
-
-	defer func() {
-		for _, proc := range buildPlan.processes {
-			if proc.ProcessState == nil {
-				fmt.Printf("sending interrupt to %s\n", proc)
-				proc.Process.Signal(os.Interrupt)
-			}
-		}
-
-		doneCh := make(chan struct{})
-
-		go func() {
-			for _, proc := range buildPlan.processes {
-				if proc.ProcessState == nil {
-					proc.Process.Wait()
-				}
-			}
-		}()
-
-		select {
-		case <-doneCh:
-		case <-time.After(3 * time.Second):
-		}
-
-		for _, proc := range buildPlan.processes {
-			if proc.ProcessState == nil {
-				fmt.Printf("sending kill to %s\n", proc)
-				proc.Process.Kill()
-			}
-		}
-	}()
-
-	var wg sync.WaitGroup
-
-	if err := startBuild(&wg); err != nil {
-		panic(err)
-	}
-
-	logDone := make(chan struct{})
-
-	go func() {
-		defer close(logDone)
-		logLoop()
-	}()
-
-	wg.Wait()
-	close(buildPlan.logchan)
-	<-logDone
-
-	if err := buildPlan.checkError(); err != nil {
-		panic(err)
-	}
+	return allArchitectures
 }
 
-func startBuild(wg *sync.WaitGroup) (err error) {
+func startBuild(ctx context.Context) (wg *sync.WaitGroup, err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			err = fmt.Errorf("panic: %v", r)
 		}
 	}()
+
+	wg = &sync.WaitGroup{}
 
 	startCh := make(chan struct{})
 	doBake := false
@@ -169,37 +160,15 @@ func startBuild(wg *sync.WaitGroup) (err error) {
 				buildPlan.outputs[outname] = make(chan struct{})
 			}
 
-			ctx := context.WithValue(context.Background(), ctxkeyTask, buildTask)
+			ctx := context.WithValue(ctx, ctxkeyTask, buildTask)
 			ctx = context.WithValue(ctx, ctykeyArch, arch)
+			ctx = redirectLogs(ctx, buildPlan.logchan)
 
 			go func(ctx context.Context) {
 				defer wg.Done()
 				<-startCh
 
-				btask := ctx.Value(ctxkeyTask).(task)  //nolint:forcetypeassert
-				arch := ctx.Value(ctykeyArch).(string) //nolint:forcetypeassert
-
-				if btask.bake {
-					<-buildPlan.bakeChan
-				}
-
-				if btask.run != nil {
-					start := time.Now()
-
-					logf(ctx, applog.LogLevelInfo, "starting task %s-%s", btask.name, arch)
-
-					if err := btask.run(ctx, btask, arch); err != nil {
-						logf(ctx, applog.LogLevelError, "failed: %v", err)
-						buildPlan.setError(err)
-					}
-
-					logf(ctx, applog.LogLevelInfo, "finished task %s-%s in %s", btask.name, arch, time.Since(start))
-				}
-
-				for _, output := range btask.outputs {
-					outname := path.Join(arch, output)
-					close(buildPlan.outputs[outname])
-				}
+				runBuildTask(ctx)
 			}(ctx)
 		}
 	}
@@ -207,9 +176,37 @@ func startBuild(wg *sync.WaitGroup) (err error) {
 	close(startCh)
 
 	if doBake {
-		ctx := context.WithValue(context.Background(), ctxkeyTask, task{name: "bake"})
-		return buildPlan.bake(ctx)
+		ctx := context.WithValue(ctx, ctxkeyTask, task{name: "bake"})
+
+		return wg, buildPlan.bake(ctx)
 	}
 
-	return nil
+	return wg, nil
+}
+
+func runBuildTask(ctx context.Context) {
+	btask, _ := ctx.Value(ctxkeyTask).(task)
+	arch, _ := ctx.Value(ctykeyArch).(string)
+
+	if btask.bake {
+		<-buildPlan.bakeChan
+	}
+
+	if btask.run != nil {
+		start := time.Now()
+
+		logf(ctx, applog.LogLevelInfo, "starting task %s-%s", btask.name, arch)
+
+		if err := btask.run(ctx, btask, arch); err != nil {
+			logf(ctx, applog.LogLevelError, "failed: %v", err)
+			buildPlan.setError(err)
+		}
+
+		logf(ctx, applog.LogLevelInfo, "finished task %s-%s in %s", btask.name, arch, time.Since(start))
+	}
+
+	for _, output := range btask.outputs {
+		outname := path.Join(arch, output)
+		close(buildPlan.outputs[outname])
+	}
 }

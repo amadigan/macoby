@@ -1,6 +1,6 @@
 //go:build cgo
 
-package main
+package compress
 
 /*
 #cgo CFLAGS: -DGOXZ_SKIP_C_COMPILATION

@@ -1,12 +1,12 @@
 # option to use ECR or other image registry
 ARG IMAGE_PREFIX=""
 # edge is used for the latest version of docker-engine
-ARG ALPINE_SYSTEM_VERSION=edge
+ARG ALPINE_VERSION=3.21.2
 # passed in by the build
 ARG GO_VERSION=1
 
-FROM ${IMAGE_PREFIX}alpine AS build-tools
-RUN apk add --no-cache squashfs-tools
+FROM ${IMAGE_PREFIX}alpine:${ALPINE_VERSION} AS build-tools
+RUN apk add --no-cache squashfs-tools xz 
 
 FROM ${IMAGE_PREFIX}golang:${GO_VERSION}-alpine AS build-go
 ENV CGO_ENABLED=0
@@ -26,6 +26,12 @@ ENV GOBUILD_FLAGS=""
 ENV GOBUILD_LDFLAGS=""
 RUN --mount=type=cache,target=/go/pkg/mod  --mount=type=bind,target=. go build -o /target/init ${GOBUILD_FLAGS} -ldflags "${GOBUILD_LDFLAGS}" ./internal/guest/init
 
+FROM build-tools AS kernel-source
+WORKDIR /src
+ARG KERNEL_VERSION=6.13.3
+ADD --link https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-${KERNEL_VERSION}.tar.xz /linux.tar.xz
+RUN tar --strip-components=1 -xJf /linux.tar.xz
+
 FROM ${IMAGE_PREFIX}debian:bookworm-slim AS build-kernel
 RUN rm -f /etc/apt/apt.conf.d/docker-clean; echo 'Binary::apt::APT::Keep-Downloaded-Packages "true";' > /etc/apt/apt.conf.d/keep-cache
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked --mount=type=cache,target=/var/lib/apt,sharing=locked \
@@ -34,10 +40,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked --mount=type=cache,t
     crossbuild-essential-amd64 gcc-x86-64-linux-gnu binutils-x86-64-linux-gnu \
     crossbuild-essential-arm64 gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
     ncurses-dev libssl-dev libelf-dev xz-utils
-WORKDIR /src
-ARG KERNEL_VERSION=6.13.1
-ADD --link https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-${KERNEL_VERSION}.tar.xz /linux.tar.xz
-RUN tar --strip-components=1 -xJf /linux.tar.xz
+COPY --link --from=kernel-source /src /src
 
 FROM build-kernel AS build-kernel-arm64
 WORKDIR /build
@@ -68,21 +71,23 @@ FROM build-kernel-amd64 AS build-kernel-amd64-modules
 RUN make -j $(nproc) -l $(nproc) modules
 RUN make modules_install INSTALL_MOD_PATH=/target
 
-FROM --platform=linux/arm64 ${IMAGE_PREFIX}alpine:${ALPINE_SYSTEM_VERSION} AS root-arm64
-# git and openssh-client are used by dockerd
+FROM --platform=linux/arm64 ${IMAGE_PREFIX}alpine:${ALPINE_VERSION} AS root-arm64
+# use edge as fallback for latest version of docker-engine
+RUN echo "http://dl-cdn.alpinelinux.org/alpine/edge/community" >> /etc/apk/repositories
 ARG DOCKER_VERSION=""
-RUN apk add --no-cache e2fsprogs btrfs-progs git openssh-client docker-engine${DOCKER_VERSION}
+# git and openssh-client are used by dockerd
+RUN apk add --no-cache e2fsprogs e2fsprogs-extra btrfs-progs git openssh-client cni-plugins docker-engine${DOCKER_VERSION}
 RUN apk del apk-tools alpine-keys musl-utils scanelf libc-utils
 COPY --link --from=build-kernel-arm64-modules /target/lib /lib
 RUN depmod $(ls /lib/modules)
 RUN rm -rf /home /media /sbin/init
 COPY --link --from=build-init-arm64 /target/init /sbin/init
 
-FROM --platform=linux/amd64 ${IMAGE_PREFIX}alpine:${ALPINE_SYSTEM_VERSION} AS root-amd64
-# git and openssh-client are used by dockerd
+FROM --platform=linux/amd64 ${IMAGE_PREFIX}alpine:${ALPINE_VERSION} AS root-amd64
+RUN echo "http://dl-cdn.alpinelinux.org/alpine/edge/community" >> /etc/apk/repositories
 ARG DOCKER_VERSION=""
 # note qemu-aarch64 for arm64 binary translation
-RUN apk add --no-cache e2fsprogs btrfs-progs git openssh-client qemu-aarch64 docker-engine${DOCKER_VERSION}
+RUN apk add --no-cache e2fsprogs e2fsprogs-extra btrfs-progs git openssh-client qemu-aarch64 cni-plugins docker-engine${DOCKER_VERSION}
 RUN apk del apk-tools alpine-keys musl-utils scanelf libc-utils
 COPY --link --from=build-kernel-amd64-modules /target/lib /lib
 RUN depmod $(ls /lib/modules)

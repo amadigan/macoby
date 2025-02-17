@@ -10,22 +10,22 @@ import (
 )
 
 type Layout struct {
-	Ram           uint64                `json:"ram,omitempty" yaml:"ram,omitempty"`
-	Cpu           uint                  `json:"cpu,omitempty" yaml:"cpu,omitempty"`
-	Kernel        *Path                 `json:"kernel,omitempty" yaml:"kernel,omitempty"`
-	Root          *Path                 `json:"root,omitempty" yaml:"root,omitempty"`
-	Disks         map[string]*DiskImage `json:"disks" yaml:"disks"`
-	Shares        map[string]*Share     `json:"shares" yaml:"shares"`
-	DockerSocket  DockerSocket          `json:"docker-socket" yaml:"docker-socket"`
-	ControlSocket *Path                 `json:"control,omitempty" yaml:"control,omitempty"`
-	Sockets       map[string]string     `json:"sockets" yaml:"sockets"`
-	Console       bool                  `json:"-" yaml:"-"`
-	JsonConfigs   map[string]any        `json:"json-conf" yaml:"json-conf"`
-	HostIface     string                `json:"host-iface,omitempty" yaml:"host-iface,omitempty"`
-	Sysctl        map[string]string     `json:"sysctl" yaml:"sysctl"`
-	StateFile     *Path                 `json:"state-file,omitempty" yaml:"state-file,omitempty"`
-	Log           LogConfig             `json:"logs" yaml:"logs"`
-	DockerConfig  map[string]any        `json:"dockerd" yaml:"dockerd"`
+	Ram            uint64                `json:"ram,omitempty" yaml:"ram,omitempty"`
+	Cpu            uint                  `json:"cpu,omitempty" yaml:"cpu,omitempty"`
+	Kernel         *Path                 `json:"kernel,omitempty" yaml:"kernel,omitempty"`
+	Root           *Path                 `json:"root,omitempty" yaml:"root,omitempty"`
+	Disks          map[string]*DiskImage `json:"disks" yaml:"disks"`
+	Shares         map[string]*Share     `json:"shares" yaml:"shares"`
+	DockerSocket   DockerSocket          `json:"docker-socket" yaml:"docker-socket"`
+	Sockets        map[string]string     `json:"sockets" yaml:"sockets"`
+	Console        bool                  `json:"-" yaml:"-"`
+	JsonConfigs    map[string]any        `json:"json-conf" yaml:"json-conf"`
+	HostIface      string                `json:"host-iface,omitempty" yaml:"host-iface,omitempty"`
+	Sysctl         map[string]string     `json:"sysctl" yaml:"sysctl"`
+	StateFile      *Path                 `json:"state-file,omitempty" yaml:"state-file,omitempty"`
+	Log            LogConfig             `json:"logs" yaml:"logs"`
+	DockerConfig   map[string]any        `json:"dockerd" yaml:"dockerd"`
+	MetricInterval uint16                `json:"metric-interval,omitempty" yaml:"metric-interval,omitempty"`
 }
 
 type DiskImage struct {
@@ -66,7 +66,7 @@ func (s *Share) UnmarshalText(data []byte) error {
 	return nil
 }
 
-func (l *Layout) SetDefaults() {
+func (l *Layout) SetDefaults() { //nolint:cyclop
 	if l.Ram == 0 {
 		total := memory.TotalMemory()
 		l.Ram = total / 4 / 1024 / 1024
@@ -75,6 +75,10 @@ func (l *Layout) SetDefaults() {
 	if l.Cpu == 0 {
 		// #nosec G115
 		l.Cpu = uint(runtime.NumCPU())
+	}
+
+	if l.MetricInterval == 0 {
+		l.MetricInterval = 15
 	}
 
 	if l.Kernel == nil || l.Kernel.Original == "" {
@@ -111,10 +115,6 @@ func (l *Layout) SetDefaults() {
 func (l *Layout) SetDefaultSockets() {
 	if len(l.DockerSocket.HostPath) == 0 {
 		l.DockerSocket.HostPath = Paths{{Original: fmt.Sprintf("${%s}/run/docker.sock", HomeEnv)}}
-	}
-
-	if l.ControlSocket == nil || l.ControlSocket.Original == "" {
-		l.ControlSocket = &Path{Original: fmt.Sprintf("${%s}/run/%s.sock", HomeEnv, Name)}
 	}
 }
 

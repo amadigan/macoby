@@ -40,13 +40,14 @@ func (p *plan) buildRailyard(ctx context.Context, t task, arch string) error {
 
 	if err := p.run(ctx, cmd); err != nil {
 		logf(ctx, applog.LogLevelError, "failed to build %s: %v", target, err)
+
 		return err
 	}
 
-	if stat, err := os.Stat(outfile); err != nil && !stat.ModTime().After(mtime) {
+	if stat, err := os.Stat(outfile); err == nil && !stat.ModTime().After(mtime) {
 		logf(ctx, applog.LogLevelDebug, "no change to %s", outfile)
 
-		return err
+		return nil
 	}
 
 	codesigner := p.codesigner
@@ -61,6 +62,7 @@ func (p *plan) buildRailyard(ctx context.Context, t task, arch string) error {
 
 	if err := p.run(ctx, cmd); err != nil {
 		logf(ctx, applog.LogLevelError, "failed to codesign %s: %v", outfile, err)
+
 		return err
 	}
 

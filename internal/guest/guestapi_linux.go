@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"github.com/amadigan/macoby/internal/applog"
+	"github.com/amadigan/macoby/internal/event"
 	"github.com/amadigan/macoby/internal/rpc"
 	"github.com/mdlayher/vsock"
 	"golang.org/x/sys/unix"
@@ -413,9 +415,88 @@ func sysctl(req map[string]string) error {
 	return nil
 }
 
-func (g *Guest) Metrics(req []string, out *rpc.Metrics) error {
+func (g *Guest) Metrics(req []string, out *event.Metrics) error {
+	rv := event.Metrics{
+		Disks: make(map[string]event.DiskMetrics, len(req)),
+	}
 
-	*out = rpc.Metrics{}
+	for _, disk := range req {
+		var stat syscall.Statfs_t
+
+		if err := syscall.Statfs(disk, &stat); err != nil {
+			return fmt.Errorf("Failed to statfs %s: %v", disk, err)
+		}
+
+		rv.Disks[disk] = event.DiskMetrics{
+			Total:     stat.Blocks * uint64(stat.Bsize),
+			Free:      stat.Bfree * uint64(stat.Bsize),
+			MaxFiles:  stat.Files,
+			FreeFiles: stat.Ffree,
+		}
+	}
+
+	bs, err := os.ReadFile("/proc/meminfo")
+	if err != nil {
+		return fmt.Errorf("Failed to read /proc/meminfo: %v", err)
+	}
+
+	for _, line := range strings.Split(string(bs), "\n") {
+		if strings.HasPrefix(line, "MemTotal:") {
+			if rv.Mem, err = parseMem(line); err != nil {
+				return fmt.Errorf("Failed to parse MemTotal: %v", err)
+			}
+		} else if strings.HasPrefix(line, "MemFree:") {
+			if rv.MemFree, err = parseMem(line); err != nil {
+				return fmt.Errorf("Failed to parse MemFree: %v", err)
+			}
+		}
+	}
+
+	var info syscall.Sysinfo_t
+	if err := syscall.Sysinfo(&info); err != nil {
+		return fmt.Errorf("Failed to get sysinfo: %v", err)
+	}
+
+	rv.Uptime = int64(info.Uptime)
+	rv.Loads = [3]uint64{info.Loads[0], info.Loads[1], info.Loads[2]}
+	rv.Swap = info.Totalswap
+	rv.SwapFree = info.Freeswap
+	rv.Procs = info.Procs
+
+	*out = rv
 
 	return nil
+}
+
+func (g *Guest) GC(struct{}, *struct{}) error {
+	runtime.GC()
+
+	return nil
+}
+
+func parseMem(line string) (val uint64, err error) {
+	fields := strings.Fields(line)
+
+	if len(fields) < 2 {
+		return 0, fmt.Errorf("Invalid line: %s", line)
+	}
+
+	if val, err = strconv.ParseUint(fields[1], 10, 64); err != nil {
+		return 0, fmt.Errorf("Failed to parse %s: %v", fields[1], err)
+	}
+
+	if len(fields) > 2 {
+		switch fields[2] {
+		case "kB":
+			val *= 1024
+		case "mB":
+			val *= 1024 * 1024
+		case "gB":
+			val *= 1024 * 1024 * 1024
+		case "tB":
+			val *= 1024 * 1024 * 1024 * 1024
+		}
+	}
+
+	return val, nil
 }

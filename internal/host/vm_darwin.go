@@ -1,6 +1,7 @@
 package host
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,8 +12,11 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/Code-Hex/vz/v3"
+	"github.com/amadigan/macoby/internal/applog"
+	"github.com/amadigan/macoby/internal/event"
 	"github.com/amadigan/macoby/internal/host/config"
 	"github.com/amadigan/macoby/internal/host/disk"
 	"github.com/amadigan/macoby/internal/rpc"
@@ -24,8 +28,9 @@ type guestCommand func(*VirtualMachine) error
 type VirtualMachine struct {
 	Layout       config.Layout
 	StateChannel chan<- DaemonState
-	LogHandler   func(rpc.LogEvent)
+	LogChannel   chan<- applog.Message
 
+	status       event.Status
 	vm           *vz.VirtualMachine
 	vsock        *vz.VirtioSocketDevice
 	rpcConn      net.Conn
@@ -36,11 +41,24 @@ type VirtualMachine struct {
 	inits        []guestCommand
 	initResponse rpc.InitResponse
 	listeners    map[net.Listener]struct{}
+	metrics      event.Metrics
 
 	mutex sync.RWMutex
 }
 
-func (vm *VirtualMachine) Start(state DaemonState) error {
+func (vm *VirtualMachine) UpdateStatus(ctx context.Context, status event.Status) {
+	vm.mutex.Lock()
+	defer vm.mutex.Unlock()
+
+	if vm.status != status {
+		vm.status = status
+		log.Infof("new vm status: %s", status)
+		event.Emit(ctx, status)
+	}
+}
+
+func (vm *VirtualMachine) Start(ctx context.Context, state DaemonState) error {
+	vm.UpdateStatus(ctx, event.StatusBooting)
 	vm.listeners = make(map[net.Listener]struct{})
 	configs := prepareConfigsAsync(vm.Layout)
 
@@ -100,20 +118,72 @@ func (vm *VirtualMachine) Start(state DaemonState) error {
 		return fmt.Errorf("failed to start virtual machine: %w", err)
 	}
 
-	vst, ok := <-vm.vm.StateChangedNotify()
-
-	if !ok {
+	if st, ok := <-vm.vm.StateChangedNotify(); !ok {
 		return errors.New("state channel closed")
+	} else if st != vz.VirtualMachineStateRunning && st != vz.VirtualMachineStateStarting {
+		return fmt.Errorf("unexpected state: %s", st)
 	}
-
-	log.Debugf("VM state: %s", vst)
 
 	go func() {
 		for state := range vm.vm.StateChangedNotify() {
-			log.Debugf("VM state: %s", state)
+			log.Infof("VM state: %d", state)
+
+			switch state { //nolint:exhaustive
+			case vz.VirtualMachineStateStopped:
+				fallthrough
+			case vz.VirtualMachineStateError:
+				vm.UpdateStatus(ctx, event.StatusStopped)
+
+				return
+			case vz.VirtualMachineStateStopping:
+				vm.UpdateStatus(ctx, event.StatusStopping)
+			}
 		}
+
+		log.Debug("VM state channel closed")
 	}()
 
+	if err := vm.handshake(); err != nil {
+		return err
+	}
+
+	var result rpc.InitResponse
+
+	log.Debug("sending init request")
+
+	if err := vm.client.Init(rpc.InitRequest{OverlaySize: 16 * 1024 * 1024, Sysctl: vm.Layout.Sysctl}, &result); err != nil {
+		return fmt.Errorf("failed to initialize guest: %w", err)
+	}
+
+	log.Debugf("init response: %v", result)
+
+	state.IPv4Address = result.IPv4.String()
+
+	confFiles, err := configs()
+	if err != nil {
+		return fmt.Errorf("failed to prepare configs: %w", err)
+	}
+
+	for name, data := range confFiles {
+		log.Debugf("sending config %s", name)
+
+		if err := vm.Write(name, data); err != nil {
+			return fmt.Errorf("failed to write config %s: %w", name, err)
+		}
+	}
+
+	if err := vm.mountFilesystems(); err != nil {
+		return err
+	}
+
+	go vm.metricsLoop(ctx)
+
+	vm.StateChannel <- state
+
+	return nil
+}
+
+func (vm *VirtualMachine) handshake() error {
 	if socks := vm.vm.SocketDevices(); len(socks) > 0 {
 		vm.vsock = socks[0]
 	} else {
@@ -138,7 +208,7 @@ func (vm *VirtualMachine) Start(state DaemonState) error {
 		log.Debug("listening for guest events")
 
 		for event := range rpc.NewReceiver(eventStream, 32) {
-			vm.LogHandler(event)
+			vm.LogChannel <- applog.Message{Subsystem: event.Name, Data: event.Data}
 		}
 	}()
 
@@ -152,31 +222,10 @@ func (vm *VirtualMachine) Start(state DaemonState) error {
 	vm.rpcConn = vconn
 	vm.client = rpc.NewGuestClient(gorpc.NewClient(vconn))
 
-	var result rpc.InitResponse
+	return nil
+}
 
-	log.Debug("sending init request")
-
-	if err := vm.client.Init(rpc.InitRequest{OverlaySize: 64 * 1024 * 1024, Sysctl: vm.Layout.Sysctl}, &result); err != nil {
-		return fmt.Errorf("failed to initialize guest: %w", err)
-	}
-
-	log.Debugf("init response: %v", result)
-
-	state.IPv4Address = result.IPv4.String()
-
-	confFiles, err := configs()
-	if err != nil {
-		return fmt.Errorf("failed to prepare configs: %w", err)
-	}
-
-	for name, data := range confFiles {
-		log.Debugf("sending config %s", name)
-
-		if err := vm.Write(name, data); err != nil {
-			return fmt.Errorf("failed to write config %s: %w", name, err)
-		}
-	}
-
+func (vm *VirtualMachine) mountFilesystems() error {
 	slices.SortFunc(vm.mounts, func(left, right diskMount) int {
 		// shortest path first
 		return len(left.mountpoint) - len(right.mountpoint)
@@ -196,13 +245,37 @@ func (vm *VirtualMachine) Start(state DaemonState) error {
 		}
 	}
 
-	vm.StateChannel <- state
-
 	return nil
 }
 
+func (vm *VirtualMachine) metricsLoop(ctx context.Context) {
+	interval := time.Duration(vm.Layout.MetricInterval) * time.Second
+
+	vm.mutex.Lock()
+	keys := util.MapKeys(vm.metrics.Disks)
+	vm.mutex.Unlock()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(interval):
+			var metrics event.Metrics
+			if err := vm.client.Metrics(keys, &metrics); err != nil {
+				log.Warnf("failed to get metrics: %s", err)
+			} else {
+				vm.mutex.Lock()
+				vm.metrics = metrics
+				vm.mutex.Unlock()
+
+				event.Emit(ctx, metrics)
+			}
+		}
+	}
+}
+
 func (vm *VirtualMachine) createVMConfig() (*vz.VirtualMachineConfiguration, error) {
-	cmdline := []string{"root=/dev/vda"}
+	cmdline := []string{"ro", "root=/dev/vda"}
 
 	if !vm.Layout.Console {
 		cmdline = append(cmdline, "quiet", "console=ttysnull")
@@ -271,6 +344,7 @@ func setupVMBase(config *vz.VirtualMachineConfiguration, state *DaemonState) err
 	if machineID == nil {
 		var err error
 		machineID, err = vz.NewGenericMachineIdentifier()
+
 		if err != nil {
 			log.Warnf("failed to create random machine ID: %s", err)
 		} else {
@@ -294,10 +368,6 @@ func setupVMBase(config *vz.VirtualMachineConfiguration, state *DaemonState) err
 	}
 
 	return nil
-}
-
-func ptr[T any](v T) *T {
-	return &v
 }
 
 func setupVMNetwork(config *vz.VirtualMachineConfiguration, state *DaemonState) error {
@@ -408,12 +478,12 @@ func (vm *VirtualMachine) prepareDisks() error {
 
 		device := fmt.Sprintf("/dev/vd%c", 'a'+len(vm.storages))
 		vm.storages = append(vm.storages, dev)
+		mounted := false
 
 		dm := diskMount{
 			mountpoint: disk.Mount,
 			mountFunc: func(vm *VirtualMachine) error {
 				result, err := fsIdentify()
-
 				if err != nil {
 					return fmt.Errorf("failed to identify filesystem: %w", err)
 				}
@@ -431,13 +501,83 @@ func (vm *VirtualMachine) prepareDisks() error {
 					} else if out.Exit != 0 {
 						return fmt.Errorf("mkfs failed: %s", out.Output)
 					}
+
+					//nolint:gosec
+					metrics := event.DiskMetrics{Total: uint64(size), Free: uint64(size)}
+					vm.setDiskMetrics(disk.Mount, metrics)
 				} else if size != result.Size {
-					log.Infof("resizing filesystem %s to %d bytes", disk.Path, size)
-					// skip for now
+					log.Infof("resizing filesystem %s from %d to %d", disk.Mount, result.Size, size)
+
+					if disk.FS == "ext4" {
+						cmd := rpc.Command{Path: "/sbin/e2fsck", Args: []string{"e2fsck", "-f", "-y", device}}
+						if out, err := vm.Run(cmd); err != nil {
+							return fmt.Errorf("failed to run e2fsck: %w", err)
+						} else if out.Exit != 0 {
+							return fmt.Errorf("e2fsck failed: %s", out.Output)
+						}
+
+						cmd = rpc.Command{Path: "/usr/sbin/resize2fs", Args: []string{"resize2fs", device, fmt.Sprintf("%ds", size/512)}}
+
+						if out, err := vm.Run(cmd); err != nil {
+							return fmt.Errorf("failed to run resize2fs: %w", err)
+						} else if out.Exit != 0 {
+							return fmt.Errorf("resize2fs failed: %s", out.Output)
+						}
+
+						if stat.Size() > size {
+							if err := setFileSize(disk.Path.Resolved, size); err != nil {
+								return fmt.Errorf("failed to truncate disk %s: %w", label, err)
+							}
+						}
+
+					} else if disk.FS == "btrfs" {
+						// mount the filesystem
+						if err := vm.Mount(device, disk.Mount, disk.FS, disk.Options); err != nil {
+							return fmt.Errorf("failed to mount %s: %w", disk.Mount, err)
+						}
+
+						mounted = true
+
+						cmd := rpc.Command{Path: "/sbin/btrfs", Args: []string{"btrfs", "filesystem", "resize", fmt.Sprintf("%d", size), disk.Mount}}
+
+						if out, err := vm.Run(cmd); err != nil {
+							return fmt.Errorf("failed to run btrfs resize: %w", err)
+						} else if out.Exit != 0 {
+							return fmt.Errorf("btrfs resize failed: %s", out.Output)
+						}
+
+						if stat.Size() > size {
+							if err := setFileSize(disk.Path.Resolved, size); err != nil {
+								return fmt.Errorf("failed to truncate disk %s: %w", label, err)
+							}
+						}
+					}
+
+					//nolint:gosec
+					metrics := event.DiskMetrics{
+						Total: uint64(size),
+						Free:  uint64(result.Free - (result.Size - size)),
+					}
+
+					vm.setDiskMetrics(disk.Mount, metrics)
+				} else {
+					//nolint:gosec
+					metrics := event.DiskMetrics{
+						Total:     uint64(result.Size),
+						Free:      uint64(result.Free),
+						MaxFiles:  result.MaxFiles,
+						FreeFiles: result.FreeFiles,
+					}
+
+					log.Infof("filesystem %s: %d/%d", disk.Mount, metrics.Free, metrics.Total)
+
+					vm.setDiskMetrics(disk.Mount, metrics)
 				}
 
-				if err := vm.Mount(device, disk.Mount, disk.FS, disk.Options); err != nil {
-					return fmt.Errorf("failed to mount %s: %w", disk.Mount, err)
+				if !mounted {
+					if err := vm.Mount(device, disk.Mount, disk.FS, disk.Options); err != nil {
+						return fmt.Errorf("failed to mount %s: %w", disk.Mount, err)
+					}
 				}
 
 				return nil
@@ -448,6 +588,17 @@ func (vm *VirtualMachine) prepareDisks() error {
 	}
 
 	return nil
+}
+
+func (vm *VirtualMachine) setDiskMetrics(mountpoint string, metrics event.DiskMetrics) {
+	vm.mutex.Lock()
+	defer vm.mutex.Unlock()
+
+	if vm.metrics.Disks == nil {
+		vm.metrics.Disks = map[string]event.DiskMetrics{}
+	}
+
+	vm.metrics.Disks[mountpoint] = metrics
 }
 
 func setFileSize(path string, size int64) error {
@@ -569,4 +720,11 @@ func (vm *VirtualMachine) registerBinfmt(name string, magic string, interpreter 
 	contents := fmt.Sprintf(":%s:M::%s:%s:%s:PCF", name, magic, elfMask, interpreter)
 
 	return vm.Write("/proc/sys/fs/binfmt_misc/register", []byte(contents))
+}
+
+func (vm *VirtualMachine) Metrics() event.Metrics {
+	vm.mutex.RLock()
+	defer vm.mutex.RUnlock()
+
+	return vm.metrics
 }

@@ -12,8 +12,6 @@ import (
 	"github.com/amadigan/macoby/internal/applog"
 )
 
-const XZ_METHOD = 95
-
 func init() {
 	buildPlan.tasks["zip"] = task{
 		name:   "zip",
@@ -50,7 +48,13 @@ func (p *plan) buildZip(ctx context.Context, t task, arch string) error {
 		return err
 	}
 
-	if err := addFileToZip(ctx, zw, filepath.Join(p.outputDir, arch, kernel), "railyard/"+kernel, 0644, p.maxCompression, ts); err != nil {
+	compression := p.maxCompression
+
+	if arch == "amd64" {
+		compression = zip.Store
+	}
+
+	if err := addFileToZip(ctx, zw, filepath.Join(p.outputDir, arch, kernel), "railyard/"+kernel, 0644, compression, ts); err != nil {
 		return fmt.Errorf("failed to add %s to zip: %w", kernel, err)
 	}
 

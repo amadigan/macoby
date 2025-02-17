@@ -27,5 +27,9 @@ func IdentifyBtrfs(file io.ReaderAt) (*Filesystem, error) {
 		Size: int64(binary.LittleEndian.Uint64(superblock[0x70:0x78])),
 	}
 
+	//nolint:gosec
+	used := int64(binary.LittleEndian.Uint64(superblock[0x78:0x80]))
+	p.Free = p.Size - used
+
 	return &p, nil
 }

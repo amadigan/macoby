@@ -9,4 +9,7 @@
   },
   "go.testFlags": ["-timeout=5s"],
   "extensions.ignoreRecommendations": true,
+  "go.buildTags": "prod",
+  "go.survey.prompt": false,
+  "go.showWelcome": false,
 }

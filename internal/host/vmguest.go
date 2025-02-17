@@ -1,13 +1,14 @@
 package host
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net"
 	gorpc "net/rpc"
 
-	"github.com/Code-Hex/vz/v3"
 	"github.com/amadigan/macoby/internal/applog"
+	"github.com/amadigan/macoby/internal/event"
 	"github.com/amadigan/macoby/internal/rpc"
 	"github.com/amadigan/macoby/internal/util"
 )
@@ -59,13 +60,6 @@ func (vm *VirtualMachine) Listen(network, address string) error {
 func (vm *VirtualMachine) Signal(pid int64, sig int) error {
 	//nolint:wrapcheck
 	return vm.client.Signal(rpc.SignalRequest{Pid: pid, Signal: sig}, nil)
-}
-
-func (vm *VirtualMachine) Metrics(names []string) (rpc.Metrics, error) {
-	var metrics rpc.Metrics
-	err := vm.client.Metrics(names, &metrics)
-	//nolint:wrapcheck
-	return metrics, err
 }
 
 func (vm *VirtualMachine) DialUDP(network string, laddr *net.UDPAddr, raddr *net.UDPAddr) (net.PacketConn, error) {
@@ -147,7 +141,9 @@ func (vm *VirtualMachine) Forward(listener net.Listener, network, address string
 	vm.mutex.Unlock()
 }
 
-func (vm *VirtualMachine) Shutdown() error {
+func (vm *VirtualMachine) Shutdown(ctx context.Context) error {
+	vm.UpdateStatus(ctx, event.StatusStopping)
+
 	shutdown := util.Await(func() (struct{}, error) {
 		err := vm.client.Shutdown(struct{}{}, nil)
 
@@ -155,13 +151,26 @@ func (vm *VirtualMachine) Shutdown() error {
 		return struct{}{}, err
 	})
 
+	log.Infof("shutting down listeners...")
+
 	vm.mutex.Lock()
+	status := vm.status
+
+	var listenCh chan event.TypedEnvelope[event.Status]
+
+	if status != event.StatusStopped {
+		listenCh = make(chan event.TypedEnvelope[event.Status], 1)
+		event.Listen(ctx, listenCh)
+	}
+
 	for listener := range vm.listeners {
 		_ = listener.Close()
 	}
 
 	vm.listeners = map[net.Listener]struct{}{}
 	vm.mutex.Unlock()
+
+	log.Infof("awaiting guest shutdown...")
 
 	if _, err := shutdown(); err != nil {
 		return err
@@ -171,15 +180,12 @@ func (vm *VirtualMachine) Shutdown() error {
 		return fmt.Errorf("failed to close rpc connection: %w", err)
 	}
 
-	stateCh := vm.vm.StateChangedNotify()
+	log.Infof("waiting for vm to shutdown...")
 
-	for state := range stateCh {
-		log.Infof("vm shutting down... state: %s", state)
-
-		if state == vz.VirtualMachineStateStopped {
+	for statusEvent := range listenCh {
+		log.Infof("status: %s", statusEvent.Event)
+		if statusEvent.Event == event.StatusStopped {
 			break
-		} else if state == vz.VirtualMachineStateError {
-			return fmt.Errorf("vm failed to shutdown, state: %s", state)
 		}
 	}
 

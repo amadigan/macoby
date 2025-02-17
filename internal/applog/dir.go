@@ -1,17 +1,25 @@
 package applog
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"time"
 
+	"github.com/amadigan/macoby/internal/event"
 	"github.com/amadigan/macoby/internal/util"
 )
 
+type Message struct {
+	Subsystem string
+	Data      []byte
+}
+
 type fileLog struct {
 	outfile  *os.File
+	stream   string
 	root     string
 	pattern  string
 	fileLen  int64
@@ -20,7 +28,7 @@ type fileLog struct {
 	files    *util.List[time.Time]
 }
 
-func (f *fileLog) run(ch <-chan []byte) {
+func (f *fileLog) run(ctx context.Context, ch <-chan []byte) {
 	defer func() {
 		if f.outfile != nil {
 			f.outfile.Close()
@@ -29,7 +37,7 @@ func (f *fileLog) run(ch <-chan []byte) {
 
 	for msg := range ch {
 		if f.fileLen < 0 || f.fileLen+int64(len(msg)+1) > f.maxSize {
-			f.rotate()
+			f.rotate(ctx)
 		}
 
 		n, err := f.outfile.Write(msg)
@@ -48,7 +56,7 @@ func (f *fileLog) run(ch <-chan []byte) {
 	}
 }
 
-func (f *fileLog) rotate() {
+func (f *fileLog) rotate(ctx context.Context) {
 	if f.outfile != nil {
 		f.outfile.Close()
 	}
@@ -61,6 +69,8 @@ func (f *fileLog) rotate() {
 		panic(fmt.Errorf("Failed to open log file: %w\n", err))
 	}
 
+	go event.Emit(ctx, event.OpenLogFile{Path: outpath, Stream: f.stream})
+
 	f.outfile = outfile
 	f.fileLen = 0
 	f.files.PushFront(ts)
@@ -69,6 +79,7 @@ func (f *fileLog) rotate() {
 		ts, _ := f.files.PopBack()
 
 		go os.Remove(filepath.Join(f.root, ts.Format(f.pattern)))
+		go event.Emit(ctx, event.DeleteLogFile{Path: outpath, Stream: f.stream})
 	}
 }
 
@@ -81,9 +92,30 @@ type LogDirectory struct {
 	Fallback    string
 }
 
+type LogFile struct {
+	Path   string
+	Offset int64
+}
+
 type logNexus struct {
 	streams  map[string]chan<- []byte
 	fallback chan<- []byte
+}
+
+func (n *logNexus) runNexus(ch <-chan Message) {
+	for event := range ch {
+		if ch, ok := n.streams[event.Subsystem]; ok {
+			ch <- event.Data
+		} else {
+			n.fallback <- event.Data
+		}
+	}
+
+	for _, ch := range n.streams {
+		close(ch)
+	}
+
+	close(n.fallback)
 }
 
 type logStream struct {
@@ -92,7 +124,7 @@ type logStream struct {
 	files *util.List[time.Time]
 }
 
-func (d LogDirectory) Open(ch <-chan Event) (bool, error) {
+func (d *LogDirectory) Open(ctx context.Context, ch <-chan Message) (map[string]LogFile, error) {
 	files := make(map[string]*logStream, len(d.Streams)+1)
 
 	if d.Fallback != "" {
@@ -116,34 +148,22 @@ func (d LogDirectory) Open(ch <-chan Event) (bool, error) {
 		}
 	}
 
-	if entries, err := os.ReadDir(d.Root); err != nil {
-		if os.IsNotExist(err) {
-			err = os.MkdirAll(d.Root, 0755)
-		}
-
-		if err != nil {
-			return false, fmt.Errorf("Failed to open log directory: %w\n", err)
-		}
-	} else {
-		for _, entry := range entries {
-			if entry.IsDir() {
-				continue
-			}
-
-			for pattern, lstream := range files {
-				if ts, err := time.Parse(pattern, entry.Name()); err == nil {
-					lstream.files.PushFront(ts)
-				}
-			}
-		}
+	if err := scanLogDirectory(d.Root, files); err != nil {
+		return nil, err
 	}
 
 	nexus := &logNexus{streams: make(map[string]chan<- []byte, len(files))}
 
+	openFiles := make(map[string]LogFile, len(files))
+
 	for pattern, lstream := range files {
-		ch, err := d.newFileLog(pattern, lstream.files)
+		ch, file, err := d.newFileLog(ctx, pattern, lstream.files)
 		if err != nil {
-			return false, err
+			return nil, err
+		}
+
+		if file != nil {
+			openFiles[lstream.name] = *file
 		}
 
 		for _, key := range lstream.keys {
@@ -155,26 +175,41 @@ func (d LogDirectory) Open(ch <-chan Event) (bool, error) {
 		}
 	}
 
-	go func() {
-		for event := range ch {
-			if ch, ok := nexus.streams[event.Subsystem]; ok {
-				ch <- event.Data
-			} else {
-				nexus.fallback <- event.Data
-			}
-		}
+	go nexus.runNexus(ch)
 
-		for _, ch := range nexus.streams {
-			close(ch)
-		}
-
-		close(nexus.fallback)
-	}()
-
-	return true, nil
+	return openFiles, nil
 }
 
-func (d LogDirectory) newFileLog(pattern string, files *util.List[time.Time]) (chan<- []byte, error) {
+func scanLogDirectory(root string, streams map[string]*logStream) error {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		if os.IsNotExist(err) {
+			err = os.MkdirAll(root, 0755)
+		}
+
+		if err != nil {
+			return fmt.Errorf("Failed to open log directory: %w\n", err)
+		}
+
+		return nil
+	}
+
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+
+		for pattern, lstream := range streams {
+			if ts, err := time.Parse(pattern, entry.Name()); err == nil {
+				lstream.files.PushFront(ts)
+			}
+		}
+	}
+
+	return nil
+}
+
+func (d *LogDirectory) newFileLog(ctx context.Context, pattern string, files *util.List[time.Time]) (chan<- []byte, *LogFile, error) {
 	fl := &fileLog{
 		root:     d.Root,
 		pattern:  pattern,
@@ -184,6 +219,8 @@ func (d LogDirectory) newFileLog(pattern string, files *util.List[time.Time]) (c
 		fileLen:  -1,
 	}
 
+	var file *LogFile
+
 	if fl.files.Len() > 0 {
 		ts, _ := fl.files.Front()
 
@@ -191,21 +228,43 @@ func (d LogDirectory) newFileLog(pattern string, files *util.List[time.Time]) (c
 
 		outfile, err := os.OpenFile(outpath, os.O_APPEND|os.O_WRONLY, 0644)
 		if err != nil {
-			return nil, fmt.Errorf("Failed to open log file: %w\n", err)
+			return nil, nil, fmt.Errorf("Failed to open log file: %w\n", err)
 		}
 
 		fl.outfile = outfile
 
 		pos, err := outfile.Seek(0, io.SeekEnd)
 		if err != nil {
-			return nil, fmt.Errorf("Failed to seek to end of log file: %w\n", err)
+			return nil, nil, fmt.Errorf("Failed to seek to end of log file: %w\n", err)
 		}
 
+		file = &LogFile{Path: outpath, Offset: pos}
 		fl.fileLen = pos
 	}
 
 	ch := make(chan []byte, 1)
-	go fl.run(ch)
+	go fl.run(ctx, ch)
 
-	return ch, nil
+	return ch, file, nil
+}
+
+type MessageChanWriter struct {
+	name string
+	ch   chan<- Message
+}
+
+func (w *MessageChanWriter) Write(p []byte) (n int, err error) {
+	w.ch <- Message{Subsystem: w.name, Data: p}
+
+	return len(p), nil
+}
+
+func (w *MessageChanWriter) Close() error {
+	close(w.ch)
+
+	return nil
+}
+
+func NewMessageChanWriter(name string, ch chan<- Message) io.WriteCloser {
+	return &MessageChanWriter{name: name, ch: ch}
 }

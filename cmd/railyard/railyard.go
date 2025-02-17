@@ -37,18 +37,7 @@ import (
 
 var log = applog.New("railyard-cli")
 
-func main() {
-	if host.IsDaemon(os.Args) {
-		host.RunDaemon(os.Args, util.Env())
-
-		return
-	}
-
-	dockerCli, err := command.NewDockerCli()
-	if err != nil {
-		panic(err)
-	}
-
+func newRootCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:              "railyard [OPTIONS] COMMAND [ARG...]",
 		Short:            "Run and manage docker containers on macOS",
@@ -74,6 +63,23 @@ func main() {
 	cmd.SetOut(os.Stdout)
 	cmd.SetErr(os.Stderr)
 
+	return cmd
+}
+
+func main() {
+	if host.IsDaemon(os.Args) {
+		host.RunDaemon(os.Args, util.Env())
+
+		return
+	}
+
+	dockerCli, err := command.NewDockerCli()
+	if err != nil {
+		panic(err)
+	}
+
+	cmd := newRootCommand()
+
 	opts, helpCmd := cli.SetupRootCommand(cmd)
 
 	setupHelpCommand(dockerCli, cmd, helpCmd)
@@ -95,10 +101,8 @@ func main() {
 	}
 
 	var envs []string
-	args, os.Args, envs, err = processBuilder(dockerCli, cmd, args, os.Args)
-	if err != nil {
-		panic(err)
-	}
+
+	args, os.Args, envs = processBuilder(dockerCli, cmd, args, os.Args)
 
 	if cli.HasCompletionArg(args) {
 		// We add plugin command stubs early only for completion. We don't
@@ -115,11 +119,11 @@ func main() {
 	if len(args) > 0 {
 		ccmd, _, err := cmd.Find(args)
 		if err != nil || pluginmanager.IsPluginCommand(ccmd) {
-			fmt.Println("plugin command")
 			err := tryPluginRun(ctx, dockerCli, cmd, args[0], envs)
 			if err == nil {
 				return
 			}
+
 			if !pluginmanager.IsNotFound(err) {
 				// For plugin not found we fall through to
 				// cmd.Execute() which deals with reporting
@@ -173,14 +177,18 @@ func setupHelpCommand(dockerCli command.Cli, rootCmd, helpCmd *cobra.Command) {
 			if err == nil {
 				return helpcmd.Run()
 			}
+
 			if !pluginmanager.IsNotFound(err) {
 				return fmt.Errorf("unknown help topic: %v", strings.Join(args, " "))
 			}
 		}
+
 		if origRunE != nil {
 			return origRunE(c, args)
 		}
+
 		origRun(c, args)
+
 		return nil
 	}
 }
@@ -190,6 +198,7 @@ func setHelpFunc(dockerCli command.Cli, cmd *cobra.Command) {
 	cmd.SetHelpFunc(func(ccmd *cobra.Command, args []string) {
 		if err := pluginmanager.AddPluginCommandStubs(dockerCli, ccmd.Root()); err != nil {
 			ccmd.Println(err)
+
 			return
 		}
 
@@ -198,20 +207,21 @@ func setHelpFunc(dockerCli command.Cli, cmd *cobra.Command) {
 			if err == nil {
 				return
 			}
+
 			if !pluginmanager.IsNotFound(err) {
 				ccmd.Println(err)
+
 				return
 			}
 		}
 
 		if err := isSupported(ccmd, dockerCli); err != nil {
 			ccmd.Println(err)
+
 			return
 		}
-		if err := hideUnsupportedFeatures(ccmd, dockerCli); err != nil {
-			ccmd.Println(err)
-			return
-		}
+
+		hideUnsupportedFeatures(ccmd, dockerCli)
 
 		defaultHelpFunc(ccmd, args)
 	})
@@ -226,11 +236,14 @@ func hideFlagIf(f *pflag.Flag, condition func(string) bool, annotation string) {
 	if f.Hidden {
 		return
 	}
+
 	var val string
+
 	if values, ok := f.Annotations[annotation]; ok {
 		if len(values) > 0 {
 			val = values[0]
 		}
+
 		if condition(val) {
 			f.Hidden = true
 		}
@@ -241,6 +254,7 @@ func hideSubcommandIf(subcmd *cobra.Command, condition func(string) bool, annota
 	if subcmd.Hidden {
 		return
 	}
+
 	if v, ok := subcmd.Annotations[annotation]; ok {
 		if condition(v) {
 			subcmd.Hidden = true
@@ -248,7 +262,7 @@ func hideSubcommandIf(subcmd *cobra.Command, condition func(string) bool, annota
 	}
 }
 
-func hideUnsupportedFeatures(cmd *cobra.Command, details versionDetails) error {
+func hideUnsupportedFeatures(cmd *cobra.Command, details versionDetails) {
 	var (
 		notExperimental = func(_ string) bool { return !details.ServerInfo().HasExperimental }
 		notOSType       = func(v string) bool { return details.ServerInfo().OSType != "" && v != details.ServerInfo().OSType }
@@ -287,6 +301,7 @@ func hideUnsupportedFeatures(cmd *cobra.Command, details versionDetails) error {
 			if cmds, ok := f.Annotations["top-level"]; ok {
 				f.Hidden = !findCommand(cmd, cmds)
 			}
+
 			if f.Hidden {
 				return
 			}
@@ -304,7 +319,6 @@ func hideUnsupportedFeatures(cmd *cobra.Command, details versionDetails) error {
 		hideSubcommandIf(subcmd, notSwarmStatus, "swarm")
 		hideSubcommandIf(subcmd, versionOlderThan, "version")
 	}
-	return nil
 }
 
 // Checks if a command or one of its ancestors is in the list
@@ -312,11 +326,13 @@ func findCommand(cmd *cobra.Command, cmds []string) bool {
 	if cmd == nil {
 		return false
 	}
+
 	for _, c := range cmds {
 		if c == cmd.Name() {
 			return true
 		}
 	}
+
 	return findCommand(cmd.Parent(), cmds)
 }
 
@@ -324,6 +340,7 @@ func isSupported(cmd *cobra.Command, details versionDetails) error {
 	if err := areSubcommandsSupported(cmd, details); err != nil {
 		return err
 	}
+
 	return areFlagsSupported(cmd, details)
 }
 
@@ -343,25 +360,31 @@ func areFlagsSupported(cmd *cobra.Command, details versionDetails) error {
 		// See commit b39739123b845f872549e91be184cc583f5b387c for details.
 
 		if _, ok := f.Annotations["version"]; ok && !isVersionSupported(f, details.CurrentVersion()) {
-			errs = append(errs, fmt.Sprintf(`"--%s" requires API version %s, but the Docker daemon API version is %s`, f.Name, getFlagAnnotation(f, "version"), details.CurrentVersion()))
+			errs = append(errs, fmt.Sprintf(`"--%s" requires API version %s, but the Docker daemon API version is %s`, f.Name, getFlagAnnotation(f, "version"),
+				details.CurrentVersion()))
+
 			return
 		}
+
 		if _, ok := f.Annotations["ostype"]; ok && !isOSTypeSupported(f, details.ServerInfo().OSType) {
 			errs = append(errs, fmt.Sprintf(
 				`"--%s" is only supported on a Docker daemon running on %s, but the Docker daemon is running on %s`,
 				f.Name,
 				getFlagAnnotation(f, "ostype"), details.ServerInfo().OSType),
 			)
+
 			return
 		}
+
 		if _, ok := f.Annotations["experimental"]; ok && !details.ServerInfo().HasExperimental {
 			errs = append(errs, fmt.Sprintf(`"--%s" is only supported on a Docker daemon with experimental features enabled`, f.Name))
 		}
-		// buildkit-specific flags are noop when buildkit is not enabled, so we do not add an error in that case
 	})
+
 	if len(errs) > 0 {
 		return errors.New(strings.Join(errs, "\n"))
 	}
+
 	return nil
 }
 
@@ -375,17 +398,20 @@ func areSubcommandsSupported(cmd *cobra.Command, details versionDetails) error {
 		// daemon connection).
 		//
 		// See commit b39739123b845f872549e91be184cc583f5b387c for details.
-
 		if cmdVersion, ok := curr.Annotations["version"]; ok && versions.LessThan(details.CurrentVersion(), cmdVersion) {
 			return fmt.Errorf("%s requires API version %s, but the Docker daemon API version is %s", cmd.CommandPath(), cmdVersion, details.CurrentVersion())
 		}
+
 		if ost, ok := curr.Annotations["ostype"]; ok && details.ServerInfo().OSType != "" && ost != details.ServerInfo().OSType {
-			return fmt.Errorf("%s is only supported on a Docker daemon running on %s, but the Docker daemon is running on %s", cmd.CommandPath(), ost, details.ServerInfo().OSType)
+			return fmt.Errorf("%s is only supported on a Docker daemon running on %s, but the Docker daemon is running on %s", cmd.CommandPath(), ost,
+				details.ServerInfo().OSType)
 		}
+
 		if _, ok := curr.Annotations["experimental"]; ok && !details.ServerInfo().HasExperimental {
 			return fmt.Errorf("%s is only supported on a Docker daemon with experimental features enabled", cmd.CommandPath())
 		}
 	}
+
 	return nil
 }
 
@@ -393,6 +419,7 @@ func getFlagAnnotation(f *pflag.Flag, annotation string) string {
 	if value, ok := f.Annotations[annotation]; ok && len(value) == 1 {
 		return value[0]
 	}
+
 	return ""
 }
 
@@ -400,6 +427,7 @@ func isVersionSupported(f *pflag.Flag, clientVersion string) bool {
 	if v := getFlagAnnotation(f, "version"); v != "" {
 		return versions.GreaterThanOrEqualTo(clientVersion, v)
 	}
+
 	return true
 }
 
@@ -407,18 +435,8 @@ func isOSTypeSupported(f *pflag.Flag, osType string) bool {
 	if v := getFlagAnnotation(f, "ostype"); v != "" && osType != "" {
 		return osType == v
 	}
+
 	return true
-}
-
-// hasTags return true if any of the command's parents has tags
-func hasTags(cmd *cobra.Command) bool {
-	for curr := cmd; curr != nil; curr = curr.Parent() {
-		if len(curr.Annotations) > 0 {
-			return true
-		}
-	}
-
-	return false
 }
 
 func tryRunPluginHelp(dockerCli command.Cli, ccmd *cobra.Command, cargs []string) error {
@@ -426,15 +444,18 @@ func tryRunPluginHelp(dockerCli command.Cli, ccmd *cobra.Command, cargs []string
 
 	cmd, _, err := root.Traverse(cargs)
 	if err != nil {
-		return err
+		return err //nolint:wrapcheck
 	}
+
 	helpcmd, err := pluginmanager.PluginRunCommand(dockerCli, cmd.Name(), root)
 	if err != nil {
-		return err
+		return err //nolint:wrapcheck
 	}
-	return helpcmd.Run()
+
+	return helpcmd.Run() //nolint:wrapcheck
 }
 
+//nolint:wrapcheck
 func tryPluginRun(ctx context.Context, dockerCli command.Cli, cmd *cobra.Command, subcommand string, envs []string) error {
 	plugincmd, err := pluginmanager.PluginRunCommand(dockerCli, subcommand, cmd)
 	if err != nil {
@@ -447,6 +468,7 @@ func tryPluginRun(ctx context.Context, dockerCli command.Cli, cmd *cobra.Command
 	if err == nil {
 		plugincmd.Env = append(plugincmd.Env, socket.EnvKey+"="+srv.Addr().String())
 	}
+
 	defer func() {
 		// Close the server when plugin execution is over, so that in case
 		// it's still open, any sockets on the filesystem are cleaned up.
@@ -484,6 +506,7 @@ func tryPluginRun(ctx context.Context, dockerCli command.Cli, cmd *cobra.Command
 		if force {
 			_ = plugincmd.Process.Kill()
 			_, _ = fmt.Fprint(dockerCli.Err(), "got 3 SIGTERM/SIGINTs, forcefully exiting\n")
+
 			os.Exit(1)
 		}
 	}
@@ -507,23 +530,28 @@ func tryPluginRun(ctx context.Context, dockerCli command.Cli, cmd *cobra.Command
 			if retries >= exitLimit {
 				force = true
 			}
+
 			tryTerminatePlugin(force)
 		}
 	}()
 
 	if err := plugincmd.Run(); err != nil {
 		statusCode := 1
-		exitErr, ok := err.(*exec.ExitError)
-		if !ok {
+		var exitErr *exec.ExitError
+
+		if errors.As(err, &exitErr) {
+			if ws, ok := exitErr.Sys().(syscall.WaitStatus); ok {
+				statusCode = ws.ExitStatus()
+			}
+		} else {
 			return err
 		}
-		if ws, ok := exitErr.Sys().(syscall.WaitStatus); ok {
-			statusCode = ws.ExitStatus()
-		}
+
 		return cli.StatusError{
 			StatusCode: statusCode,
 		}
 	}
+
 	return nil
 }
 
@@ -531,12 +559,12 @@ const (
 	builderDefaultPlugin = "buildx"
 )
 
-func processBuilder(dockerCli command.Cli, cmd *cobra.Command, args, osargs []string) ([]string, []string, []string, error) {
+func processBuilder(dockerCli command.Cli, cmd *cobra.Command, args, osargs []string) ([]string, []string, []string) {
 	var envs []string
 
 	fwargs, fwosargs, fwcmdpath, forwarded := forwardBuilder(builderDefaultPlugin, args, osargs)
 	if !forwarded {
-		return args, osargs, nil, nil
+		return args, osargs, nil
 	}
 
 	// If build subcommand is forwarded, user would expect "docker build" to
@@ -554,7 +582,7 @@ func processBuilder(dockerCli command.Cli, cmd *cobra.Command, args, osargs []st
 	// overwrite the command path for this plugin using the alias name.
 	cmd.Annotations[pluginmanager.CommandAnnotationPluginCommandPath] = strings.Join(append([]string{cmd.CommandPath()}, fwcmdpath...), " ")
 
-	return fwargs, fwosargs, envs, nil
+	return fwargs, fwosargs, envs
 }
 
 func forwardBuilder(alias string, args, osargs []string) ([]string, []string, []string, bool) {
@@ -579,9 +607,11 @@ func forwardBuilder(alias string, args, osargs []string) ([]string, []string, []
 		if fwargs, changed := command.StringSliceReplaceAt(args, al[0], al[1], 0); changed {
 			fwosargs, _ := command.StringSliceReplaceAt(osargs, al[0], al[1], -1)
 			fwcmdpath := al[2]
+
 			return fwargs, fwosargs, fwcmdpath, true
 		}
 	}
+
 	return args, osargs, nil, false
 }
 
@@ -593,13 +623,16 @@ func hasBuilderName(args []string, envs []string) bool {
 	flagset.SetOutput(io.Discard)
 	flagset.StringVar(&builder, "builder", "", "")
 	_ = flagset.Parse(args)
+
 	if builder != "" {
 		return true
 	}
+
 	for _, e := range envs {
 		if strings.HasPrefix(e, "BUILDX_BUILDER=") && e != "BUILDX_BUILDER=" {
 			return true
 		}
 	}
+
 	return false
 }

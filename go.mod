@@ -1,10 +1,11 @@
 module github.com/amadigan/macoby
 
-go 1.23.5
+go 1.24
 
 require (
 	github.com/Code-Hex/vz/v3 v3.6.0
 	github.com/bored-engineer/go-launchd v0.0.0-20241220214420-b514778f4f80
+	github.com/coder/websocket v1.8.12
 	github.com/containerd/containerd/api v1.8.0
 	github.com/containerd/containerd/v2 v2.0.2
 	github.com/containerd/errdefs v1.0.0
@@ -12,10 +13,12 @@ require (
 	github.com/docker/buildx v0.20.1
 	github.com/docker/cli v27.5.1+incompatible
 	github.com/docker/docker v27.5.1+incompatible
+	github.com/fatih/camelcase v1.0.0
 	github.com/google/uuid v1.6.0
 	github.com/insomniacslk/dhcp v0.0.0-20250109001534-8abf58130905
 	github.com/jamespfennell/xz v0.1.2
 	github.com/mdlayher/vsock v1.2.1
+	github.com/mitchellh/go-ps v1.0.0
 	github.com/moby/buildkit v0.19.0
 	github.com/pbnjay/memory v0.0.0-20210728143218-7b4eea64cf58
 	github.com/spf13/cobra v1.8.1

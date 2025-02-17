@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"os"
 	"os/exec"
@@ -49,13 +50,12 @@ func (p *plan) bake(ctx context.Context) error {
 	}
 
 	env = append(env, "output_dir="+p.outputDir)
-
 	cmd.Env = append(os.Environ(), env...)
 
 	start := time.Now()
 
 	if err := cmd.Start(); err != nil {
-		return err
+		return fmt.Errorf("bake failed to start: %w", err)
 	}
 
 	p.mutex.Lock()
@@ -74,9 +74,11 @@ func (p *plan) bake(ctx context.Context) error {
 
 	if err != nil {
 		logf(ctx, applog.LogLevelError, "bake failed after %s: %v", duration, err)
+
+		return fmt.Errorf("bake failed: %w", err)
 	} else {
 		logf(ctx, applog.LogLevelInfo, "bake done in %s", duration)
-	}
 
-	return err
+		return nil
+	}
 }

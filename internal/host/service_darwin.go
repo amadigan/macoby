@@ -69,42 +69,9 @@ func (vm *VirtualMachine) LaunchService(ctx context.Context, cmd rpc.Command) er
 	rc := make(chan int)
 	defer close(rc)
 
-	go func() {
-		for {
-			if notify, err := ReadSDNotify(conn); err != nil {
-				log.Errorf("failed to read from notify socket: %v", err)
+	go waitNotify(conn, rc)
 
-				defer func() {
-					_ = recover()
-				}()
-
-				rc <- -1
-
-				return
-			} else if notify.IsReady() {
-				rc <- 0
-
-				return
-			}
-		}
-	}()
-
-	go func() {
-		exit, err := vm.WaitService(cmd.Name)
-
-		defer func() {
-			_ = recover()
-		}()
-
-		switch {
-		case err != nil:
-			rc <- 1
-		case exit == 0:
-			rc <- -1
-		default:
-			rc <- exit
-		}
-	}()
+	go vm.waitService(cmd.Name, rc)
 
 	select {
 	case <-ctx.Done():
@@ -117,6 +84,43 @@ func (vm *VirtualMachine) LaunchService(ctx context.Context, cmd rpc.Command) er
 			return fmt.Errorf("service %s exited", cmd.Name)
 		default:
 			return fmt.Errorf("service %s exited with code %d", cmd.Name, code)
+		}
+	}
+}
+
+func (vm *VirtualMachine) waitService(name string, ch chan int) {
+	exit, err := vm.WaitService(name)
+
+	defer func() {
+		_ = recover()
+	}()
+
+	switch {
+	case err != nil:
+		ch <- 1
+	case exit == 0:
+		ch <- -1
+	default:
+		ch <- exit
+	}
+}
+
+func waitNotify(conn *rpc.DatagramClient, ch chan int) {
+	for {
+		if notify, err := ReadSDNotify(conn); err != nil {
+			log.Errorf("failed to read from notify socket: %v", err)
+
+			defer func() {
+				_ = recover()
+			}()
+
+			ch <- -1
+
+			return
+		} else if notify.IsReady() {
+			ch <- 0
+
+			return
 		}
 	}
 }

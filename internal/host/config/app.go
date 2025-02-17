@@ -21,6 +21,11 @@ const UserHomeDir = "${HOME}/Library/Application Support/railyard"
 
 var log = applog.New("config")
 
+var packages = map[string]string{
+	"LOCALPKG_PREFIX": "${HOME}/.local",
+	"HOMEBREW_PREFIX": "/opt/homebrew",
+}
+
 func BuildHomePath(env map[string]string, path string) (string, string) {
 	paths := util.List[string]{}
 
@@ -53,21 +58,15 @@ func BuildHomePath(env map[string]string, path string) (string, string) {
 
 	paths.PushBack(interpolate(UserHomeDir, env))
 
-	localpkgPrefix := env["LOCALPKG_PREFIX"]
+	for key, value := range packages {
+		if val := env[key]; val != "" {
+			value = val
+		} else {
+			value = interpolate(value, env)
+		}
 
-	if localpkgPrefix == "" {
-		localpkgPrefix = filepath.Join(env["HOME"], ".local")
+		paths.PushBack(filepath.Join(value, "share", Name))
 	}
-
-	paths.PushBack(filepath.Join(localpkgPrefix, "share", Name))
-
-	homebrewPrefix := env["HOMEBREW_PREFIX"]
-
-	if homebrewPrefix == "" {
-		homebrewPrefix = "/opt/homebrew" // /usr/local is already handled by SysHomeDir
-	}
-
-	paths.PushBack(filepath.Join(homebrewPrefix, "share", Name))
 
 	paths.PushBack(interpolate(SysHomeDir, env))
 

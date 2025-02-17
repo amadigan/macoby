@@ -17,18 +17,20 @@ type logMessage struct {
 	message string
 }
 
+const logFormat = "[%s] %s %s %s\n"
+
+type logchanKey struct{}
+
+var logchanCtxKey = logchanKey{}
+
 func logLoop() {
 	for msg := range buildPlan.logchan {
 		msgtime := msg.time.Truncate(time.Second).UTC().Format(time.RFC3339)
-		fmt.Printf("[%s] %s %s %s\n", msgtime, msg.level, msg.task, msg.message)
+		fmt.Printf(logFormat, msgtime, msg.level, msg.task, msg.message) //nolint:forbidigo
 	}
 }
 
-func logf(ctx context.Context, level applog.LogLevel, format string, args ...any) {
-	if logLevel > level {
-		return
-	}
-
+func logContext(ctx context.Context) string {
 	btask, _ := ctx.Value(ctxkeyTask).(task)
 	task := btask.name
 
@@ -40,10 +42,29 @@ func logf(ctx context.Context, level applog.LogLevel, format string, args ...any
 		task += "-" + arch
 	}
 
-	buildPlan.logchan <- logMessage{
-		time:    time.Now(),
-		level:   level,
-		task:    task,
-		message: fmt.Sprintf(format, args...),
+	return task
+}
+
+func redirectLogs(ctx context.Context, ch chan logMessage) context.Context {
+	return context.WithValue(ctx, logchanCtxKey, ch)
+}
+
+func logf(ctx context.Context, level applog.LogLevel, format string, args ...any) {
+	if logLevel > level {
+		return
+	}
+
+	logtime := time.Now()
+	msg := fmt.Sprintf(format, args...)
+
+	if ch, ok := ctx.Value(logchanCtxKey).(chan logMessage); ok {
+		ch <- logMessage{
+			time:    logtime,
+			level:   level,
+			task:    logContext(ctx),
+			message: msg,
+		}
+	} else {
+		fmt.Printf(logFormat, time.Now().UTC().Format(time.RFC3339), level, logContext(ctx), msg) //nolint:forbidigo
 	}
 }

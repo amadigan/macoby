@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"time"
 
+	"github.com/insomniacslk/dhcp/dhcpv4"
 	"github.com/insomniacslk/dhcp/dhcpv4/nclient4"
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
@@ -101,11 +103,15 @@ func ConfigureDevice(ctx context.Context, iface *net.Interface) (net.IP, net.IP,
 		return nil, nil, err
 	}
 
-	lease, err := client.Request(ctx)
-
+	lease, err := client.Request(ctx, func(d *dhcpv4.DHCPv4) {
+		d.Options.Update(dhcpv4.OptIPAddressLeaseTime(24 * time.Hour))
+	})
 	if err != nil {
 		return nil, nil, err
 	}
+
+	log.Infof("Received offer: %s\n", lease.Offer.Summary())
+	log.Infof("DHCP options: %s\n", lease.Offer.Options)
 
 	addr := net.IPNet{
 		IP:   lease.Offer.YourIPAddr,

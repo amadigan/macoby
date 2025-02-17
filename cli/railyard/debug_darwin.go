@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/amadigan/macoby/internal/applog"
+	"github.com/amadigan/macoby/internal/controlsock"
+	"github.com/amadigan/macoby/internal/event"
 	"github.com/amadigan/macoby/internal/host"
 	"github.com/amadigan/macoby/internal/rpc"
 	"github.com/containerd/containerd/api/events"
@@ -37,10 +39,14 @@ func NewDebugCommand(cli *Cli) *cobra.Command {
 	return cmd
 }
 
-func debugVM(ctx context.Context, cli *Cli) error {
+func debugVM(octx context.Context, cli *Cli) error { //nolint:cyclop,funlen
 	if err := cli.setup(); err != nil {
 		return err
 	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ctx = event.NewBus(context.Background())
 
 	layout := cli.Config
 
@@ -55,7 +61,7 @@ func debugVM(ctx context.Context, cli *Cli) error {
 	layout.SetDefaults()
 	layout.SetDefaultSockets()
 
-	logChan := make(chan applog.Event, 100)
+	logChan := make(chan applog.Message, 100)
 	go debugLog(logChan)
 
 	if err := layout.ResolvePaths(cli.Env, cli.Home); err != nil {
@@ -98,6 +104,7 @@ func debugVM(ctx context.Context, cli *Cli) error {
 	vmstate, done, err := host.OpenDaemonState(layout.StateFile.Resolved, host.StatusStarting, stateCh)
 	if err != nil {
 		close(stateCh)
+
 		return fmt.Errorf("failed to open daemon state: %w", err)
 	}
 
@@ -108,16 +115,14 @@ func debugVM(ctx context.Context, cli *Cli) error {
 	}()
 
 	vm := &host.VirtualMachine{
-		Layout: *layout,
-		LogHandler: func(event rpc.LogEvent) {
-			logChan <- applog.Event{Subsystem: event.Name, Data: event.Data}
-		},
+		Layout:       *layout,
+		LogChannel:   logChan,
 		StateChannel: stateCh,
 	}
 
 	start := time.Now()
 
-	if err := vm.Start(vmstate); err != nil {
+	if err := vm.Start(ctx, vmstate); err != nil {
 		return fmt.Errorf("failed to start VM: %w", err)
 	}
 
@@ -143,24 +148,12 @@ func debugVM(ctx context.Context, cli *Cli) error {
 	}
 
 	log.Infof("dockerd started in %s", time.Since(start))
+	vm.UpdateStatus(ctx, event.StatusReady)
 
-	network, addr, err := layout.ControlSocket.ResolveListenSocket(cli.Env, cli.Home)
-	if err != nil {
-		return fmt.Errorf("failed to resolve listen socket %s:%s: %w", network, addr, err)
-	}
-
-	if network == "unix" {
-		_ = os.Remove(addr)
-	}
-
-	listener, err := net.Listen(network, addr)
-	if err != nil {
-		return fmt.Errorf("failed to listen on %s%s: %w", network, addr, err)
-	}
-
+	listener, err := controlsock.ListenSocket(cli.Home)
 	defer listener.Close()
 
-	control.SetupServer()
+	control.SetupServer(ctx, vm)
 
 	go func() {
 		_ = control.Serve(listener)
@@ -175,20 +168,22 @@ func debugVM(ctx context.Context, cli *Cli) error {
 
 	log.Infof("listening on %v", layout.DockerSocket.HostPath)
 
-	<-ctx.Done()
+	<-octx.Done()
 
 	log.Infof("Shutting down VM")
 
 	stateCh <- host.DaemonState{Status: host.StatusStopping}
 
-	if err := vm.Shutdown(); err != nil {
+	if err := vm.Shutdown(ctx); err != nil {
 		return fmt.Errorf("failed to shutdown VM: %w", err)
 	}
+
+	log.Infof("VM shutdown")
 
 	return nil
 }
 
-func debugLog(ch <-chan applog.Event) {
+func debugLog(ch <-chan applog.Message) {
 	for event := range ch {
 		lines := strings.Split(strings.TrimSpace(string(event.Data)), "\n")
 

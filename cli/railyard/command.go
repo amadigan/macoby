@@ -75,6 +75,7 @@ func NewVMCommand(cli *Cli) *cobra.Command {
 	cmd.AddCommand(NewEnableCommand(cli))
 	cmd.AddCommand(NewDisableCommand(cli))
 	cmd.AddCommand(NewSetupCommand(cli))
+	cmd.AddCommand(NewStatsCommand(cli))
 
 	return cmd
 }

@@ -22,10 +22,13 @@ const (
 const squashfsMagic uint32 = 0x73717368
 
 type Filesystem struct {
-	Type  FSType
-	Id    uuid.UUID
-	Label string
-	Size  int64 // in bytes
+	Type      FSType
+	Id        uuid.UUID
+	Label     string
+	Size      int64 // in bytes
+	Free      int64
+	MaxFiles  uint64
+	FreeFiles uint64
 }
 
 func Identify(size int64, f io.ReaderAt) (*Filesystem, error) {

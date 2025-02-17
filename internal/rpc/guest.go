@@ -5,6 +5,8 @@ import (
 	"io"
 	"net"
 	"net/rpc"
+
+	"github.com/amadigan/macoby/internal/event"
 )
 
 type Guest interface {
@@ -29,9 +31,11 @@ type Guest interface {
 	// Signal... send a signal to a process
 	Signal(SignalRequest, *struct{}) error
 	// Metrics... get system metrics
-	Metrics([]string, *Metrics) error
+	Metrics([]string, *event.Metrics) error
 	// Shutdown... initiate shutdown
 	Shutdown(struct{}, *struct{}) error
+	// GC... run garbage collection
+	GC(struct{}, *struct{}) error
 }
 
 type InitRequest struct {
@@ -74,24 +78,6 @@ type Command struct {
 type CommandOutput struct {
 	Output []byte
 	Exit   int
-}
-
-type Metrics struct {
-	Uptime   int64
-	Loads    [3]uint64
-	Mem      uint64
-	MemFree  uint64
-	Swap     uint64
-	SwapFree uint64
-	Procs    uint16
-	Disks    map[string]DiskMetrics
-}
-
-type DiskMetrics struct {
-	Total     uint64
-	Free      uint64
-	MaxFiles  uint64
-	FreeFiles uint64
 }
 
 type ListenRequest struct {
@@ -170,7 +156,7 @@ func (c *GuestClient) Shutdown(_ struct{}, _ *struct{}) error {
 	return c.Call("Guest.Shutdown", struct{}{}, nil)
 }
 
-func (c *GuestClient) Metrics(req []string, out *Metrics) error {
+func (c *GuestClient) Metrics(req []string, out *event.Metrics) error {
 	//nolint:wrapcheck
 	return c.Call("Guest.Metrics", req, out)
 }
@@ -178,4 +164,9 @@ func (c *GuestClient) Metrics(req []string, out *Metrics) error {
 func (c *GuestClient) Signal(req SignalRequest, _ *struct{}) error {
 	//nolint:wrapcheck
 	return c.Call("Guest.Signal", req, nil)
+}
+
+func (c *GuestClient) GC(_ struct{}, _ *struct{}) error {
+	//nolint:wrapcheck
+	return c.Call("Guest.GC", struct{}{}, nil)
 }

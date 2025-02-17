@@ -23,6 +23,7 @@ func init() {
 			if err != nil {
 				panic(err)
 			}
+
 			modfile, err := modfile.Parse(filepath.Join(dir, "go.mod"), bs, nil)
 			if err != nil {
 				panic(err)

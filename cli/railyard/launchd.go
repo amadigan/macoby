@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"github.com/amadigan/macoby/internal/host/config"
-	"github.com/amadigan/macoby/internal/host/plist"
+	"github.com/amadigan/macoby/internal/util"
 	"github.com/spf13/cobra"
 )
 
@@ -85,6 +85,7 @@ func (cli *Cli) enableDaemon(do daemonOptions) error {
 func bootout(serviceTarget string) error {
 	for exec.Command("launchctl", "print", serviceTarget) != nil {
 		log.Infof("unloading %s", serviceTarget)
+
 		if out, err := exec.Command("launchctl", "bootout", serviceTarget, "socket").CombinedOutput(); err != nil {
 			return fmt.Errorf("failed to unload %s: %s: %w", serviceTarget, string(out), err)
 		}
@@ -130,35 +131,28 @@ func (cli *Cli) generatePlist(debug bool) ([]byte, string, error) {
 
 	id := config.AppID + cli.Suffix
 
-	doc := plist.PropertyList{
-		"Label":   plist.String(id),
-		"Program": plist.String(self),
-		"ProgramArguments": plist.Array{
-			plist.String(fmt.Sprintf("%sd", config.Name)),
-			plist.String(fmt.Sprintf("%d", len(cli.Config.DockerSocket.HostPath))),
+	doc := PropertyList{
+		"Label":   String(id),
+		"Program": String(self),
+		"ProgramArguments": Array{
+			String(fmt.Sprintf("%sd", config.Name)),
+			String(fmt.Sprintf("%d", len(cli.Config.DockerSocket.HostPath))),
 		},
-		"ExitTimeOut": plist.Integer(35), //TODO: this should be based on the daemon's shutdown timeout
-		"ProcessType": plist.String("Interactive"),
+		"ExitTimeOut": Integer(35), //TODO: this should be based on the daemon's shutdown timeout
+		"ProcessType": String("Interactive"),
 	}
 
 	if cli.SearchPath != defaultSearchPath() {
-		doc["EnvironmentVariables"] = plist.Dict{config.HomeEnv: plist.String(cli.SearchPath)}
+		doc["EnvironmentVariables"] = Dict{config.HomeEnv: String(cli.SearchPath)}
 	}
 
 	if debug {
-		doc["StandardOutPath"] = plist.String(filepath.Join(cli.Home, "railyard-daemon.out"))
-		doc["StandardErrorPath"] = plist.String(filepath.Join(cli.Home, "railyard-daemon.err"))
+		doc["StandardOutPath"] = String(filepath.Join(cli.Home, "railyard-daemon.out"))
+		doc["StandardErrorPath"] = String(filepath.Join(cli.Home, "railyard-daemon.err"))
 	}
 
-	sockets := make(plist.Dict, len(cli.Config.DockerSocket.HostPath)+1)
+	sockets := make(Dict, len(cli.Config.DockerSocket.HostPath)+1)
 	doc["Sockets"] = sockets
-
-	nw, addr, err := cli.Config.ControlSocket.ResolveListenSocket(cli.Env, cli.Home)
-	if err != nil {
-		return nil, "", fmt.Errorf("failed to resolve control socket: %w", err)
-	}
-
-	sockets["control"] = socket(nw, addr)
 
 	for i, sock := range cli.Config.DockerSocket.HostPath {
 		nw, addr, err := sock.ResolveListenSocket(cli.Env, cli.Home)
@@ -169,32 +163,38 @@ func (cli *Cli) generatePlist(debug bool) ([]byte, string, error) {
 		sockets[fmt.Sprintf("docker%d", i)] = socket(nw, addr)
 	}
 
+	bs, err := toXML(doc)
+
+	return bs, id, err
+}
+
+func toXML(doc PropertyList) ([]byte, error) {
 	var buf bytes.Buffer
 	enc := xml.NewEncoder(&buf)
 	enc.Indent("", "  ")
 
-	err = encodeTokens(enc,
+	err := encodeTokens(enc,
 		xml.ProcInst{Target: "xml", Inst: []byte(`version="1.0" encoding="UTF-8"`)}, xml.CharData("\n"),
 		xml.Directive(`DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"`),
 		xml.CharData("\n"))
 
 	if err != nil {
-		return nil, "", fmt.Errorf("failed to encode plist: %w", err)
+		return nil, fmt.Errorf("failed to encode plist: %w", err)
 	}
 
 	if err := enc.Encode(doc); err != nil {
-		return nil, "", fmt.Errorf("failed to encode plist: %w", err)
+		return nil, fmt.Errorf("failed to encode plist: %w", err)
 	}
 
 	if err := enc.EncodeToken(xml.CharData("\n")); err != nil {
-		return nil, "", fmt.Errorf("failed to encode plist: %w", err)
+		return nil, fmt.Errorf("failed to encode plist: %w", err)
 	}
 
 	if err := enc.Flush(); err != nil {
-		return nil, "", fmt.Errorf("failed to encode plist: %w", err)
+		return nil, fmt.Errorf("failed to encode plist: %w", err)
 	}
 
-	return buf.Bytes(), id, nil
+	return buf.Bytes(), nil
 }
 
 func encodeTokens(enc *xml.Encoder, tokens ...xml.Token) error {
@@ -208,26 +208,26 @@ func encodeTokens(enc *xml.Encoder, tokens ...xml.Token) error {
 	return nil
 }
 
-func socket(network, addr string) plist.Dict {
+func socket(network, addr string) Dict {
 	if network == "unix" {
-		return plist.Dict{
-			"SockPathName": plist.String(addr),
-			"SockPathMode": plist.Integer(0o600),
+		return Dict{
+			"SockPathName": String(addr),
+			"SockPathMode": Integer(0o600),
 		}
 	}
 
-	dict := plist.Dict{
-		"SockProtocol":    plist.String("TCP"),
-		"SockServiceName": plist.String(addr),
+	dict := Dict{
+		"SockProtocol":    String("TCP"),
+		"SockServiceName": String(addr),
 	}
 
 	switch network {
 	case "tcp":
-		dict["SockFamily"] = plist.String("IPv4v6")
+		dict["SockFamily"] = String("IPv4v6")
 	case "tcp4":
-		dict["SockFamily"] = plist.String("IPv4")
+		dict["SockFamily"] = String("IPv4")
 	case "tcp6":
-		dict["SockFamily"] = plist.String("IPv6")
+		dict["SockFamily"] = String("IPv6")
 	}
 
 	return dict
@@ -283,7 +283,7 @@ func (lc *launchdControl) Restart() error {
 }
 
 func (lc *launchdControl) Exists() bool {
-	return exec.Command("launchctl", "print", lc.domain+"/"+lc.label) == nil
+	return exec.Command("launchctl", "print", lc.domain+"/"+lc.label) == nil //nolint:gosec
 }
 
 func (lc *launchdControl) Unload(ctx context.Context) error {
@@ -291,7 +291,7 @@ func (lc *launchdControl) Unload(ctx context.Context) error {
 		return err
 	}
 
-	for exec.Command("launchctl", "kill", "SIGTERM", lc.domain+"/"+lc.label) == nil {
+	for exec.Command("launchctl", "kill", "SIGTERM", lc.domain+"/"+lc.label) == nil { //nolint:gosec
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
@@ -334,6 +334,105 @@ func (lc *launchdControl) Update(ctx context.Context, data []byte) error {
 		return lc.Load()
 	} else if !lc.Exists() {
 		return lc.Load()
+	}
+
+	return nil
+}
+
+type PropertyList map[string]any
+type Dict map[string]any
+type String string
+type Integer int64
+type Boolean bool
+type Array []any
+
+func (p PropertyList) MarshalXML(e *xml.Encoder, start xml.StartElement) error {
+	el := xml.StartElement{Name: xml.Name{Local: "plist"}, Attr: []xml.Attr{{Name: xml.Name{Local: "version"}, Value: "1.0"}}}
+
+	if err := e.EncodeToken(el); err != nil {
+		return fmt.Errorf("failed to encode plist start element: %w", err)
+	}
+
+	if err := e.Encode(Dict(p)); err != nil {
+		return fmt.Errorf("failed to encode plist dict: %w", err)
+	}
+
+	if err := e.EncodeToken(el.End()); err != nil {
+		return fmt.Errorf("failed to encode plist end element: %w", err)
+	}
+
+	return nil
+}
+
+func (d Dict) MarshalXML(e *xml.Encoder, start xml.StartElement) error {
+	el := xml.StartElement{Name: xml.Name{Local: "dict"}}
+	if err := e.EncodeToken(el); err != nil {
+		return fmt.Errorf("failed to encode dict start element: %w", err)
+	}
+
+	for _, key := range util.SortKeys(d) {
+		if err := e.EncodeElement(xml.CharData(key), xml.StartElement{Name: xml.Name{Local: "key"}}); err != nil {
+			return fmt.Errorf("failed to encode dict key: %w", err)
+		}
+
+		if err := e.Encode(d[key]); err != nil {
+			return fmt.Errorf("failed to encode dict value: %w", err)
+		}
+	}
+
+	if err := e.EncodeToken(el.End()); err != nil {
+		return fmt.Errorf("failed to encode dict end element: %w", err)
+	}
+
+	return nil
+}
+
+func (s String) MarshalXML(e *xml.Encoder, start xml.StartElement) error {
+	el := xml.StartElement{Name: xml.Name{Local: "string"}}
+	if err := e.EncodeElement(xml.CharData(s), el); err != nil {
+		return fmt.Errorf("failed to encode string: %w", err)
+	}
+
+	return nil
+}
+
+func (a Array) MarshalXML(e *xml.Encoder, start xml.StartElement) error {
+	el := xml.StartElement{Name: xml.Name{Local: "array"}}
+
+	if err := e.EncodeToken(el); err != nil {
+		return fmt.Errorf("failed to encode array start element: %w", err)
+	}
+
+	for _, item := range a {
+		if err := e.Encode(item); err != nil {
+			return fmt.Errorf("failed to encode array item: %w", err)
+		}
+	}
+
+	if err := e.EncodeToken(el.End()); err != nil {
+		return fmt.Errorf("failed to encode array end element: %w", err)
+	}
+
+	return nil
+}
+
+func (i Integer) MarshalXML(e *xml.Encoder, start xml.StartElement) error {
+	el := xml.StartElement{Name: xml.Name{Local: "integer"}}
+	if err := e.EncodeElement(xml.CharData(fmt.Sprintf("%d", i)), el); err != nil {
+		return fmt.Errorf("failed to encode integer: %w", err)
+	}
+
+	return nil
+}
+
+func (b Boolean) MarshalXML(e *xml.Encoder, start xml.StartElement) error {
+	el := xml.StartElement{Name: xml.Name{Local: "true"}}
+	if !b {
+		el.Name.Local = "false"
+	}
+
+	if err := e.EncodeToken(el); err != nil {
+		return fmt.Errorf("failed to encode boolean: %w", err)
 	}
 
 	return nil
