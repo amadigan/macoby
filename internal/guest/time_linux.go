@@ -1,59 +1,57 @@
 package guest
 
 import (
-	"os"
-	"runtime"
+	"context"
+	"fmt"
 	"time"
 
+	"github.com/amadigan/macoby/internal/rpc"
+	"github.com/mdlayher/vsock"
 	"golang.org/x/sys/unix"
 )
 
-func StartClockSync(interval time.Duration, stop <-chan struct{}) {
-	f, err := os.OpenFile("/dev/rtc0", os.O_RDWR, 0)
-
+func StartClockSync(ctx context.Context, interval time.Duration) error {
+	// connect to the host clock server running on vsock port 2
+	conn, err := vsock.Dial(2, 2, nil)
 	if err != nil {
-		log.Errorf("Failed to open /dev/rtc0: %v", err)
-
-		return
+		return fmt.Errorf("failed to dial host clock: %w", err)
 	}
 
-	defer f.Close()
+	go func() {
+		t := &timesync{first: true}
+		rpc.GuestClock(ctx, conn, interval, t.adjtime)
+	}()
 
-	for {
-		runtime.LockOSThread()
-		rt, err := unix.IoctlGetRTCTime(int(f.Fd()))
-		now := time.Now()
+	return nil
+}
 
-		if err != nil {
-			log.Errorf("Failed to get RTC time: %v", err)
+type timesync struct {
+	first bool
+}
 
-			return
-		}
+func (t *timesync) adjtime(offset time.Duration) error {
+	var delta unix.Timex
+	delta.Status = unix.STA_PLL
 
-		year := int(rt.Year) + 1900
-		month := time.Month(rt.Mon + 1)
-		day := int(rt.Mday)
-		hour := int(rt.Hour)
-		minute := int(rt.Min)
-		sec := int(rt.Sec)
+	if !t.first && offset.Abs() < 500*time.Millisecond {
+		delta.Modes = unix.ADJ_OFFSET | unix.ADJ_NANO | unix.ADJ_STATUS
+		delta.Offset = offset.Nanoseconds()
+	} else {
+		delta.Modes = unix.ADJ_SETOFFSET | unix.ADJ_NANO | unix.ADJ_STATUS
+		delta.Time.Sec = int64(offset.Truncate(time.Second).Seconds())
+		delta.Time.Usec = (offset - offset.Truncate(time.Second)).Nanoseconds()
 
-		rtcTime := time.Date(year, month, day, hour, minute, int(sec), 0, time.UTC)
-		tv := unix.NsecToTimeval(rtcTime.UnixNano())
-
-		if rtcTime.Sub(now).Abs() >= 2*time.Second {
-			if err := unix.Settimeofday(&tv); err != nil {
-				log.Errorf("Failed to set time: %v", err)
-			} else {
-				log.Infof("Time set to %v, was %v", tv, now)
-			}
-		}
-		runtime.UnlockOSThread()
-
-		select {
-		case <-time.After(interval):
-		case <-stop:
-			return
+		if delta.Time.Usec < 0 {
+			delta.Time.Sec--
+			delta.Time.Usec += time.Second.Nanoseconds()
 		}
 	}
 
+	t.first = false
+
+	if _, err := unix.Adjtimex(&delta); err != nil {
+		return fmt.Errorf("adjtimex failed: %v", err)
+	}
+
+	return nil
 }

@@ -2,15 +2,15 @@ package sysctl
 
 import (
 	"fmt"
-	"io/fs"
+	"os"
 	"strings"
 )
 
-func LoadSysctls(root fs.FS, files ...string) (map[string]string, error) {
+func LoadSysctls(files ...string) (map[string]string, error) {
 	ctls := map[string]string{}
 
 	for _, file := range files {
-		data, err := fs.ReadFile(root, file)
+		data, err := os.ReadFile(file)
 		if err != nil {
 			return nil, fmt.Errorf("failed to read %s: %w", file, err)
 		}

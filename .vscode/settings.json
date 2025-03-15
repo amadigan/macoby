@@ -12,4 +12,5 @@
   "go.buildTags": "prod",
   "go.survey.prompt": false,
   "go.showWelcome": false,
+  "go.lintTool": "golangci-lint",
 }

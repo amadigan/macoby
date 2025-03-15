@@ -8,7 +8,6 @@
 /.devcontainer/
 /build/Dockerfile
 local/
-/tools/
 /dist/
 Makefile
 docs/

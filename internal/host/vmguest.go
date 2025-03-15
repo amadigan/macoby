@@ -112,13 +112,17 @@ func (vm *VirtualMachine) Dial(network, address string) (net.Conn, error) {
 	return rpc.Dial(conn, network, address)
 }
 
-func (vm *VirtualMachine) Forward(listener net.Listener, network, address string) {
+func (vm *VirtualMachine) ForwardStopLatch(listener net.Listener, network, address string, latch *StopLatch) {
 	vm.mutex.Lock()
 	vm.listeners[listener] = struct{}{}
 	vm.mutex.Unlock()
 
 	applog.FanOut(listener.Accept, func(conn net.Conn) {
 		defer conn.Close()
+		if latch != nil {
+			latch.Add(1)
+			defer latch.Add(-1)
+		}
 
 		remote, err := vm.Dial(network, address)
 		if err != nil {
@@ -127,18 +131,24 @@ func (vm *VirtualMachine) Forward(listener net.Listener, network, address string
 			return
 		}
 
-		defer remote.Close()
-
 		go func() {
+			defer remote.Close()
 			_, _ = io.Copy(remote, conn)
+			log.Debugf("remote disconnected %s from %s", remote.RemoteAddr(), conn.RemoteAddr())
 		}()
 
+		log.Debugf("forwarding %s to %s", conn.RemoteAddr(), remote.RemoteAddr())
 		_, _ = io.Copy(conn, remote)
+		log.Debugf("disconnected %s from %s", conn.RemoteAddr(), remote.RemoteAddr())
 	}, log)
 
 	vm.mutex.Lock()
 	delete(vm.listeners, listener)
 	vm.mutex.Unlock()
+}
+
+func (vm *VirtualMachine) Forward(listener net.Listener, network, address string) {
+	vm.ForwardStopLatch(listener, network, address, nil)
 }
 
 func (vm *VirtualMachine) Shutdown(ctx context.Context) error {
@@ -190,4 +200,9 @@ func (vm *VirtualMachine) Shutdown(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+func (vm *VirtualMachine) GC() error {
+	//nolint:wrapcheck
+	return vm.client.GC(struct{}{}, nil)
 }

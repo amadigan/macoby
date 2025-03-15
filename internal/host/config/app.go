@@ -9,7 +9,7 @@ import (
 
 	"github.com/amadigan/macoby/internal/applog"
 	"github.com/amadigan/macoby/internal/util"
-	"gopkg.in/yaml.v2"
+	"gopkg.in/yaml.v3"
 )
 
 const Name = "railyard"
@@ -35,13 +35,15 @@ func BuildHomePath(env map[string]string, path string) (string, string) {
 		home = env[HomeEnv]
 	}
 
-	for _, part := range strings.Split(home, ":") {
+	for part := range strings.SplitSeq(home, ":") {
 		if part != "" {
 			if abs, err := filepath.Abs(part); err == nil {
 				paths.PushBack(abs)
 			}
 		}
 	}
+
+	paths.PushBack(interpolate(UserHomeDir, env))
 
 	// TODO this should be *after* the user's home directory
 	if ep, err := os.Executable(); err != nil {
@@ -55,8 +57,6 @@ func BuildHomePath(env map[string]string, path string) (string, string) {
 			paths.PushBack(abs)
 		}
 	}
-
-	paths.PushBack(interpolate(UserHomeDir, env))
 
 	for key, value := range packages {
 		if val := env[key]; val != "" {
@@ -91,7 +91,7 @@ func BuildHomePath(env map[string]string, path string) (string, string) {
 //go:embed railyard.yaml
 var defaultConfig []byte
 
-func LoadConfig(env map[string]string, home string) (*Layout, string, error) {
+func LoadConfig(env map[string]string, home string) (*Layout, *Path, error) {
 	home, searchpath := BuildHomePath(env, home)
 	env[HomeEnv] = searchpath
 
@@ -100,26 +100,50 @@ func LoadConfig(env map[string]string, home string) (*Layout, string, error) {
 	var configBytes []byte
 
 	if !confPath.ResolveInputFile(env, home) {
-		log.Infof("failed to resolved %s.yaml, using default config", Name)
+		log.Infof("failed to resolve %s.yaml, using default config", Name)
 
 		configBytes = defaultConfig
 	} else if bs, err := os.ReadFile(confPath.Resolved); err != nil {
-		return nil, home, fmt.Errorf("failed to read %s: %w", confPath.Resolved, err)
+		return nil, confPath, fmt.Errorf("failed to read %s: %w", confPath.Resolved, err)
 	} else {
 		configBytes = bs
 	}
 
-	var layout Layout
+	layout := Layout{Home: home}
 
 	if err := yaml.Unmarshal(configBytes, &layout); err != nil {
-		return nil, home, fmt.Errorf("failed to read parse %s: %w", confPath.Resolved, err)
+		return nil, confPath, fmt.Errorf("failed to read parse %s: %w", confPath.Resolved, err)
 	}
 
 	layout.SetDefaults()
 
-	if err := layout.ResolvePaths(env, home); err != nil {
-		return &layout, home, fmt.Errorf("failed to resolve paths: %w", err)
+	if err := layout.ResolvePaths(env); err != nil {
+		return &layout, confPath, fmt.Errorf("failed to resolve paths: %w", err)
 	}
 
-	return &layout, home, nil
+	return &layout, confPath, nil
+}
+
+func WriteDefaultConfig(env map[string]string, home string, outpath *Path) error {
+	if outpath.Resolved != "" {
+		return nil
+	}
+
+	if exists, err := outpath.ResolveOutputFile(env, home); err != nil {
+		return fmt.Errorf("failed to resolve config file: %w", err)
+	} else if exists {
+		return nil
+	}
+
+	log.Infof("writing default config to %s", outpath.Original)
+
+	if err := os.MkdirAll(filepath.Dir(outpath.Resolved), 0755); err != nil {
+		return fmt.Errorf("failed to create directory %s: %w", filepath.Dir(outpath.Resolved), err)
+	}
+
+	if err := os.WriteFile(outpath.Resolved, defaultConfig, 0644); err != nil { //nolint:gosec
+		return fmt.Errorf("failed to write %s: %w", outpath.Resolved, err)
+	}
+
+	return nil
 }

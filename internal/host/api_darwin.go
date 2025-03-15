@@ -25,6 +25,7 @@ type ControlServer struct {
 	Logs           *applog.LogDirectory
 	LogChannel     chan<- applog.Message
 	ControlSockets []net.Listener
+	stopLatch      *StopLatch
 	vm             *VirtualMachine
 	logFiles       map[string]*util.List[applog.LogFile]
 	mux            *http.ServeMux

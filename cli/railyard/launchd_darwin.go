@@ -59,6 +59,12 @@ func NewDisableCommand(cli *Cli) *cobra.Command {
 }
 
 func (cli *Cli) enableDaemon(do daemonOptions) error {
+	if cli.ConfigPath.Resolved == "" {
+		if err := config.WriteDefaultConfig(cli.Env, cli.Config.Home, cli.ConfigPath); err != nil {
+			log.Warnf("failed to write default config: %v", err)
+		}
+	}
+
 	ctl, err := cli.newLaunchdControl()
 	if err != nil {
 		return err
@@ -83,12 +89,22 @@ func (cli *Cli) enableDaemon(do daemonOptions) error {
 }
 
 func bootout(serviceTarget string) error {
-	for exec.Command("launchctl", "print", serviceTarget) != nil {
-		log.Infof("unloading %s", serviceTarget)
+	log.Infof("unloading %s", serviceTarget)
 
+	for exec.Command("launchctl", "print", serviceTarget) != nil {
 		if out, err := exec.Command("launchctl", "bootout", serviceTarget, "socket").CombinedOutput(); err != nil {
+			var exitErr *exec.ExitError
+
+			if errors.As(err, &exitErr) && exitErr.ExitCode() == 3 {
+				log.Infof("service %s unloaded", serviceTarget)
+
+				return nil
+			}
+
 			return fmt.Errorf("failed to unload %s: %s: %w", serviceTarget, string(out), err)
 		}
+
+		time.Sleep(time.Second)
 	}
 
 	return nil
@@ -147,15 +163,15 @@ func (cli *Cli) generatePlist(debug bool) ([]byte, string, error) {
 	}
 
 	if debug {
-		doc["StandardOutPath"] = String(filepath.Join(cli.Home, "railyard-daemon.out"))
-		doc["StandardErrorPath"] = String(filepath.Join(cli.Home, "railyard-daemon.err"))
+		doc["StandardOutPath"] = String(filepath.Join(cli.Config.Home, "railyard-daemon.out"))
+		doc["StandardErrorPath"] = String(filepath.Join(cli.Config.Home, "railyard-daemon.err"))
 	}
 
-	sockets := make(Dict, len(cli.Config.DockerSocket.HostPath)+1)
+	sockets := make(Dict, len(cli.Config.DockerSocket.HostPath))
 	doc["Sockets"] = sockets
 
 	for i, sock := range cli.Config.DockerSocket.HostPath {
-		nw, addr, err := sock.ResolveListenSocket(cli.Env, cli.Home)
+		nw, addr, err := sock.ResolveListenSocket(cli.Env, cli.Config.Home)
 		if err != nil {
 			return nil, "", fmt.Errorf("failed to resolve socket %s: %w", sock.Original, err)
 		}

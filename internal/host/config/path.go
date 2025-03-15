@@ -183,27 +183,27 @@ func (p *Path) ResolveOutputDir(env map[string]string, root string) error {
 	return nil
 }
 
-func (l *Layout) ResolvePaths(env map[string]string, root string) error {
-	if !l.Kernel.ResolveInputFile(env, root) {
+func (l *Layout) ResolvePaths(env map[string]string) error {
+	if !l.Kernel.ResolveInputFile(env, l.Home) {
 		return fmt.Errorf("kernel file not found: %s", l.Kernel.Original)
 	}
 
-	if !l.Root.ResolveInputFile(env, root) {
+	if !l.Root.ResolveInputFile(env, l.Home) {
 		return fmt.Errorf("root file not found: %s", l.Root.Original)
 	}
 
-	if _, err := l.StateFile.ResolveOutputFile(env, root); err != nil {
+	if _, err := l.StateFile.ResolveOutputFile(env, l.Home); err != nil {
 		return err
 	}
 
 	for label, disk := range l.Disks {
-		if _, err := disk.Path.ResolveOutputFile(env, root); err != nil {
+		if _, err := disk.Path.ResolveOutputFile(env, l.Home); err != nil {
 			return fmt.Errorf("cannot resolve disk path %s: %w", label, err)
 		}
 	}
 
 	for dst, share := range l.Shares {
-		if !share.Source.ResolveInputDir(env, root) {
+		if !share.Source.ResolveInputDir(env, l.Home) {
 			delete(l.Shares, dst)
 		}
 	}

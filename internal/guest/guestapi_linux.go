@@ -18,6 +18,8 @@ import (
 	"github.com/amadigan/macoby/internal/applog"
 	"github.com/amadigan/macoby/internal/event"
 	"github.com/amadigan/macoby/internal/rpc"
+	"github.com/amadigan/macoby/internal/sysctl"
+	"github.com/amadigan/macoby/internal/util"
 	"github.com/mdlayher/vsock"
 	"golang.org/x/sys/unix"
 )
@@ -25,6 +27,7 @@ import (
 var _ rpc.Guest = &Guest{}
 
 func StartGuest() error {
+	fmt.Println("Starting guest")
 	bufsize := 32
 
 	if envsize := os.Getenv("EVENT_BUFFER_SIZE"); envsize != "" {
@@ -39,7 +42,6 @@ func StartGuest() error {
 
 	// start the proxy server on port 2
 	proxyListener, err := vsock.ListenContextID(3, 2, nil)
-
 	if err != nil {
 		return err
 	}
@@ -48,7 +50,6 @@ func StartGuest() error {
 
 	// bind port 1 for the guest API
 	apiListener, err := vsock.ListenContextID(3, 1, nil)
-
 	if err != nil {
 		return err
 	}
@@ -56,8 +57,8 @@ func StartGuest() error {
 	defer apiListener.Close()
 
 	// start the event emitter, this notifies the host the guest has started
+	fmt.Println("dialing host event receiver")
 	eventConn, err := vsock.Dial(2, 1, nil)
-
 	if err != nil {
 		return err
 	}
@@ -92,11 +93,18 @@ func StartGuest() error {
 var log = applog.New("guest")
 
 type Guest struct {
-	processeses map[string]*os.Process
-	emitter     chan<- rpc.LogEvent
-	clockStop   chan struct{}
+	processeses   map[string]*os.Process
+	emitter       chan<- rpc.LogEvent
+	shutdownFuncs []func()
 
 	mutex sync.Mutex
+}
+
+func (g *Guest) AddShutdownFunc(fn func()) {
+	g.mutex.Lock()
+	defer g.mutex.Unlock()
+
+	g.shutdownFuncs = append(g.shutdownFuncs, fn)
 }
 
 func (g *Guest) Write(req rpc.WriteRequest, _ *struct{}) error {
@@ -234,17 +242,36 @@ func (g *Guest) Signal(req rpc.SignalRequest, _ *struct{}) error {
 	return syscall.Kill(int(req.Pid), syscall.Signal(req.Signal))
 }
 
-func (g *Guest) Init(req rpc.InitRequest, out *rpc.InitResponse) error {
+func (g *Guest) Init(req rpc.InitRequest, _ *struct{}) error {
+	ch := make(chan struct{})
+
+	sysctlErr := util.Await(func() (struct{}, error) {
+		ctls, err := sysctl.LoadSysctls("/etc/sysctl.conf")
+		if err != nil {
+			return struct{}{}, err
+		}
+
+		for key, val := range req.Sysctl {
+			ctls[key] = val
+		}
+
+		<-ch // wait for /proc to be mounted
+
+		return struct{}{}, writeSysctls(ctls)
+	})
+
 	if err := OverlayRoot(req.OverlaySize); err != nil {
 		return err
 	}
 
-	if err := MountProc(); err != nil {
-		return err
+	if err := unix.Mount("proc", "/proc", "proc", unix.MS_NOSUID|unix.MS_STRICTATIME, ""); err != nil {
+		return fmt.Errorf("Failed to mount /proc: %v", err)
 	}
 
-	if err := MountSys(); err != nil {
-		return err
+	close(ch)
+
+	if err := unix.Mount("sysfs", "/sys", "sysfs", unix.MS_NOEXEC|unix.MS_NOATIME, ""); err != nil {
+		return fmt.Errorf("Failed to mount /sys: %v", err)
 	}
 
 	if err := MountCgroup(); err != nil {
@@ -255,18 +282,19 @@ func (g *Guest) Init(req rpc.InitRequest, out *rpc.InitResponse) error {
 		return err
 	}
 
-	g.clockStop = make(chan struct{})
+	clockCtx, clockCancel := context.WithCancel(context.Background())
+	g.AddShutdownFunc(clockCancel)
 
-	go StartClockSync(10*time.Second, g.clockStop)
-
-	if ipv4, ipv6, err := InitializeNetwork(); err == nil {
-		*out = rpc.InitResponse{IPv4: ipv4, IPv6: ipv6}
-	} else {
-		return err
+	if err := StartClockSync(clockCtx, req.ClockInterval); err != nil {
+		return fmt.Errorf("Failed to start clock sync: %v", err)
 	}
 
-	if err := sysctl(req.Sysctl); err != nil {
-		return err
+	if err := EnableLoopback(); err != nil {
+		return fmt.Errorf("Failed to bring up loopback: %v", err)
+	}
+
+	if _, err := sysctlErr(); err != nil {
+		return fmt.Errorf("Failed to set sysctls: %v", err)
 	}
 
 	return nil
@@ -297,7 +325,6 @@ func stopAllProcesses(ctx context.Context, procs map[string]*os.Process) {
 }
 
 func (g *Guest) Shutdown(struct{}, *struct{}) error {
-	close(g.clockStop)
 	g.mutex.Lock()
 	defer g.mutex.Unlock()
 
@@ -309,8 +336,12 @@ func (g *Guest) Shutdown(struct{}, *struct{}) error {
 
 	g.processeses = nil
 
+	for _, fn := range g.shutdownFuncs {
+		fn()
+	}
+
 	if err := UnmountAll(); err != nil {
-		return err
+		log.Warnf("failed to unmount all: %v", err)
 	}
 
 	return nil
@@ -382,7 +413,7 @@ func (g *Guest) Mount(req rpc.MountRequest, _ *struct{}) error {
 	return nil
 }
 
-func sysctl(req map[string]string) error {
+func writeSysctls(req map[string]string) error {
 	for key, val := range req {
 		chars := []byte(key)
 
@@ -440,7 +471,7 @@ func (g *Guest) Metrics(req []string, out *event.Metrics) error {
 		return fmt.Errorf("Failed to read /proc/meminfo: %v", err)
 	}
 
-	for _, line := range strings.Split(string(bs), "\n") {
+	for line := range strings.SplitSeq(string(bs), "\n") {
 		if strings.HasPrefix(line, "MemTotal:") {
 			if rv.Mem, err = parseMem(line); err != nil {
 				return fmt.Errorf("Failed to parse MemTotal: %v", err)

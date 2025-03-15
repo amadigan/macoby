@@ -18,7 +18,6 @@ import (
 	"github.com/amadigan/macoby/internal/applog"
 	"github.com/amadigan/macoby/internal/event"
 	"github.com/amadigan/macoby/internal/host/config"
-	"github.com/amadigan/macoby/internal/host/disk"
 	"github.com/amadigan/macoby/internal/rpc"
 	"github.com/amadigan/macoby/internal/util"
 )
@@ -30,18 +29,19 @@ type VirtualMachine struct {
 	StateChannel chan<- DaemonState
 	LogChannel   chan<- applog.Message
 
-	status       event.Status
-	vm           *vz.VirtualMachine
-	vsock        *vz.VirtioSocketDevice
-	rpcConn      net.Conn
-	client       rpc.Guest
-	mounts       []diskMount
-	shares       []vz.DirectorySharingDeviceConfiguration
-	storages     []vz.StorageDeviceConfiguration
-	inits        []guestCommand
-	initResponse rpc.InitResponse
-	listeners    map[net.Listener]struct{}
-	metrics      event.Metrics
+	status    event.Status
+	vm        *vz.VirtualMachine
+	vsock     *vz.VirtioSocketDevice
+	rpcConn   net.Conn
+	client    rpc.Guest
+	mounts    []diskMount
+	shares    []vz.DirectorySharingDeviceConfiguration
+	storages  []vz.StorageDeviceConfiguration
+	inits     []guestCommand
+	listeners map[net.Listener]struct{}
+	metrics   event.Metrics
+
+	ipv4 net.IP
 
 	mutex sync.RWMutex
 }
@@ -147,17 +147,27 @@ func (vm *VirtualMachine) Start(ctx context.Context, state DaemonState) error {
 		return err
 	}
 
-	var result rpc.InitResponse
-
 	log.Debug("sending init request")
 
-	if err := vm.client.Init(rpc.InitRequest{OverlaySize: 16 * 1024 * 1024, Sysctl: vm.Layout.Sysctl}, &result); err != nil {
+	initMsg := rpc.InitRequest{
+		OverlaySize:   16 * 1024 * 1024,
+		ClockInterval: 10 * time.Second,
+		Sysctl:        vm.Layout.Sysctl,
+	}
+
+	if err := vm.client.Init(initMsg, nil); err != nil {
 		return fmt.Errorf("failed to initialize guest: %w", err)
 	}
 
-	log.Debugf("init response: %v", result)
+	dhcp := util.Await(func() (net.IP, error) {
+		var result rpc.DHCPResponse
 
-	state.IPv4Address = result.IPv4.String()
+		if err := vm.client.DHCP(struct{}{}, &result); err != nil {
+			return nil, fmt.Errorf("failed to get DHCP address: %w", err)
+		}
+
+		return result.Address, nil
+	})
 
 	confFiles, err := configs()
 	if err != nil {
@@ -178,6 +188,12 @@ func (vm *VirtualMachine) Start(ctx context.Context, state DaemonState) error {
 
 	go vm.metricsLoop(ctx)
 
+	if vm.ipv4, err = dhcp(); err != nil {
+		return fmt.Errorf("failed to get DHCP address: %w", err)
+	}
+
+	state.IPv4Address = vm.ipv4.String()
+
 	vm.StateChannel <- state
 
 	return nil
@@ -194,7 +210,6 @@ func (vm *VirtualMachine) handshake() error {
 	if err != nil {
 		return fmt.Errorf("failed to listen on socket: %w", err)
 	}
-
 	defer listener.Close()
 
 	log.Debug("waiting for guest connection")
@@ -221,6 +236,24 @@ func (vm *VirtualMachine) handshake() error {
 
 	vm.rpcConn = vconn
 	vm.client = rpc.NewGuestClient(gorpc.NewClient(vconn))
+
+	listener, err = vm.vsock.Listen(2)
+	if err != nil {
+		return fmt.Errorf("failed to listen on socket: %w", err)
+	}
+
+	go func() {
+		defer listener.Close()
+
+		conn, err := listener.Accept()
+
+		if err != nil {
+			log.Warnf("failed to accept clock connection: %s", err)
+			return
+		}
+
+		rpc.HostClock(conn)
+	}()
 
 	return nil
 }
@@ -416,225 +449,6 @@ func setupVMNetwork(config *vz.VirtualMachineConfiguration, state *DaemonState) 
 	return nil
 }
 
-type diskMount struct {
-	mountpoint string
-	mountFunc  func(*VirtualMachine) error
-}
-
-func newBlockDevice(path string, readOnly bool, cache vz.DiskImageCachingMode, sync vz.DiskImageSynchronizationMode) (vz.StorageDeviceConfiguration, error) {
-	attachment, err := vz.NewDiskImageStorageDeviceAttachmentWithCacheAndSync(path, readOnly, cache, sync)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create disk %s attachment: %w", path, err)
-	}
-
-	cfg, err := vz.NewVirtioBlockDeviceConfiguration(attachment)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create disk %s configuration: %w", path, err)
-	}
-
-	return cfg, nil
-}
-
-func (vm *VirtualMachine) prepareDisks() error {
-	log.Debugf("root disk: %s", vm.Layout.Root)
-
-	rootImage, err := newBlockDevice(vm.Layout.Root.Resolved, true, vz.DiskImageCachingModeCached, vz.DiskImageSynchronizationModeNone)
-	if err != nil {
-		return fmt.Errorf("failed to create root disk %s configuration: %w", vm.Layout.Root, err)
-	}
-
-	vm.storages = append(vm.storages, rootImage)
-
-	for _, label := range util.SortKeys(vm.Layout.Disks) {
-		disk := vm.Layout.Disks[label]
-		if disk.Mount == "" {
-			continue
-		}
-
-		log.Debugf("disk %s: %s -> %s", label, disk.Path, disk.Mount)
-
-		size, err := config.ParseSize(disk.Size)
-
-		if err != nil {
-			return fmt.Errorf("failed to parse disk %s size: %s: %w", label, disk.Size, err)
-		}
-
-		stat, err := os.Stat(disk.Path.Resolved)
-
-		if errors.Is(err, os.ErrNotExist) || (err == nil && stat.Size() < size) {
-			if err := setFileSize(disk.Path.Resolved, size); err != nil {
-				return fmt.Errorf("failed to create disk %s (%s): %w", label, disk.Path.Resolved, err)
-			}
-		} else if err != nil {
-			return fmt.Errorf("failed to stat disk %s: %w", label, err)
-		}
-
-		fsIdentify := fsidentifyAsync(size, disk.Path.Resolved)
-
-		dev, err := newBlockDevice(disk.Path.Resolved, disk.ReadOnly, vz.DiskImageCachingModeCached, vz.DiskImageSynchronizationModeFsync)
-		if err != nil {
-			return fmt.Errorf("failed to create disk %s configuration: %w", label, err)
-		}
-
-		device := fmt.Sprintf("/dev/vd%c", 'a'+len(vm.storages))
-		vm.storages = append(vm.storages, dev)
-		mounted := false
-
-		dm := diskMount{
-			mountpoint: disk.Mount,
-			mountFunc: func(vm *VirtualMachine) error {
-				result, err := fsIdentify()
-				if err != nil {
-					return fmt.Errorf("failed to identify filesystem: %w", err)
-				}
-
-				if result == nil || string(result.Type) != disk.FS {
-					progname := "mkfs." + disk.FS
-					args := append([]string{progname, "-L", label}, disk.FormatOptions...)
-					args = append(args, device)
-
-					// mkfs
-					cmd := rpc.Command{Path: "/sbin/" + progname, Args: args}
-
-					if out, err := vm.Run(cmd); err != nil {
-						return fmt.Errorf("failed to run mkfs: %w", err)
-					} else if out.Exit != 0 {
-						return fmt.Errorf("mkfs failed: %s", out.Output)
-					}
-
-					//nolint:gosec
-					metrics := event.DiskMetrics{Total: uint64(size), Free: uint64(size)}
-					vm.setDiskMetrics(disk.Mount, metrics)
-				} else if size != result.Size {
-					log.Infof("resizing filesystem %s from %d to %d", disk.Mount, result.Size, size)
-
-					if disk.FS == "ext4" {
-						cmd := rpc.Command{Path: "/sbin/e2fsck", Args: []string{"e2fsck", "-f", "-y", device}}
-						if out, err := vm.Run(cmd); err != nil {
-							return fmt.Errorf("failed to run e2fsck: %w", err)
-						} else if out.Exit != 0 {
-							return fmt.Errorf("e2fsck failed: %s", out.Output)
-						}
-
-						cmd = rpc.Command{Path: "/usr/sbin/resize2fs", Args: []string{"resize2fs", device, fmt.Sprintf("%ds", size/512)}}
-
-						if out, err := vm.Run(cmd); err != nil {
-							return fmt.Errorf("failed to run resize2fs: %w", err)
-						} else if out.Exit != 0 {
-							return fmt.Errorf("resize2fs failed: %s", out.Output)
-						}
-
-						if stat.Size() > size {
-							if err := setFileSize(disk.Path.Resolved, size); err != nil {
-								return fmt.Errorf("failed to truncate disk %s: %w", label, err)
-							}
-						}
-
-					} else if disk.FS == "btrfs" {
-						// mount the filesystem
-						if err := vm.Mount(device, disk.Mount, disk.FS, disk.Options); err != nil {
-							return fmt.Errorf("failed to mount %s: %w", disk.Mount, err)
-						}
-
-						mounted = true
-
-						cmd := rpc.Command{Path: "/sbin/btrfs", Args: []string{"btrfs", "filesystem", "resize", fmt.Sprintf("%d", size), disk.Mount}}
-
-						if out, err := vm.Run(cmd); err != nil {
-							return fmt.Errorf("failed to run btrfs resize: %w", err)
-						} else if out.Exit != 0 {
-							return fmt.Errorf("btrfs resize failed: %s", out.Output)
-						}
-
-						if stat.Size() > size {
-							if err := setFileSize(disk.Path.Resolved, size); err != nil {
-								return fmt.Errorf("failed to truncate disk %s: %w", label, err)
-							}
-						}
-					}
-
-					//nolint:gosec
-					metrics := event.DiskMetrics{
-						Total: uint64(size),
-						Free:  uint64(result.Free - (result.Size - size)),
-					}
-
-					vm.setDiskMetrics(disk.Mount, metrics)
-				} else {
-					//nolint:gosec
-					metrics := event.DiskMetrics{
-						Total:     uint64(result.Size),
-						Free:      uint64(result.Free),
-						MaxFiles:  result.MaxFiles,
-						FreeFiles: result.FreeFiles,
-					}
-
-					log.Infof("filesystem %s: %d/%d", disk.Mount, metrics.Free, metrics.Total)
-
-					vm.setDiskMetrics(disk.Mount, metrics)
-				}
-
-				if !mounted {
-					if err := vm.Mount(device, disk.Mount, disk.FS, disk.Options); err != nil {
-						return fmt.Errorf("failed to mount %s: %w", disk.Mount, err)
-					}
-				}
-
-				return nil
-			},
-		}
-
-		vm.mounts = append(vm.mounts, dm)
-	}
-
-	return nil
-}
-
-func (vm *VirtualMachine) setDiskMetrics(mountpoint string, metrics event.DiskMetrics) {
-	vm.mutex.Lock()
-	defer vm.mutex.Unlock()
-
-	if vm.metrics.Disks == nil {
-		vm.metrics.Disks = map[string]event.DiskMetrics{}
-	}
-
-	vm.metrics.Disks[mountpoint] = metrics
-}
-
-func setFileSize(path string, size int64) error {
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY, 0644)
-
-	if err != nil {
-		return fmt.Errorf("failed to open file %s: %w", path, err)
-	}
-
-	defer file.Close()
-
-	if err := file.Truncate(size); err != nil {
-		return fmt.Errorf("failed to truncate file %s: %w", path, err)
-	}
-
-	return nil
-}
-
-func fsidentifyAsync(size int64, path string) func() (*disk.Filesystem, error) {
-	return util.Await(func() (*disk.Filesystem, error) {
-		file, err := os.Open(path)
-		if err != nil {
-			return nil, fmt.Errorf("failed to open file %s: %w", path, err)
-		}
-
-		defer file.Close()
-
-		fs, err := disk.Identify(size, file)
-		if err != nil {
-			return nil, fmt.Errorf("failed to identify filesystem: %w", err)
-		}
-
-		return fs, nil
-	})
-}
-
 func (vm *VirtualMachine) setupShares() error {
 	shares := vm.Layout.Shares
 	labels := make(map[string]bool)
@@ -712,14 +526,6 @@ func prepareConfigsAsync(layout config.Layout) func() (map[string][]byte, error)
 
 		return rv, nil
 	})
-}
-
-const elfMask = "\\xff\\xff\\xff\\xff\\xff\\xff\\xff\\x00\\xff\\xff\\xff\\xff\\xff\\xff\\xff\\xff\\xfe\\xff\\xff\\xff"
-
-func (vm *VirtualMachine) registerBinfmt(name string, magic string, interpreter string) error {
-	contents := fmt.Sprintf(":%s:M::%s:%s:%s:PCF", name, magic, elfMask, interpreter)
-
-	return vm.Write("/proc/sys/fs/binfmt_misc/register", []byte(contents))
 }
 
 func (vm *VirtualMachine) Metrics() event.Metrics {

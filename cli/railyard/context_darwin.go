@@ -17,7 +17,7 @@ func (cli *Cli) upsertContext() error {
 
 	dockerSock := cli.Config.DockerSocket.HostPath[0]
 
-	network, addr, err := dockerSock.ResolveListenSocket(cli.Env, cli.Home)
+	network, addr, err := dockerSock.ResolveListenSocket(cli.Env, cli.Config.Home)
 	if err != nil {
 		return fmt.Errorf("failed to resolve docker socket: %w", err)
 	}

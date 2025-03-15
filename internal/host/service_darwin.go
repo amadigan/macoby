@@ -28,7 +28,7 @@ func ReadSDNotify(client *rpc.DatagramClient) (*SystemdNotify, error) {
 
 	rv := &SystemdNotify{Data: map[string]string{}}
 
-	for _, line := range strings.Split(string(bs), "\n") {
+	for line := range strings.SplitSeq(string(bs), "\n") {
 		parts := strings.SplitN(line, "=", 2)
 
 		if len(parts) != 2 {
@@ -41,16 +41,24 @@ func ReadSDNotify(client *rpc.DatagramClient) (*SystemdNotify, error) {
 	return rv, nil
 }
 
-func (vm *VirtualMachine) LaunchService(ctx context.Context, cmd rpc.Command) error {
+type Service struct {
+	name string
+	pid  int64
+	ch   <-chan int
+	vm   *VirtualMachine
+}
+
+func (vm *VirtualMachine) LaunchService(ctx context.Context, cmd rpc.Command) (Service, error) {
+	svc := Service{vm: vm, name: cmd.Name}
 	if cmd.Name == "" {
-		return fmt.Errorf("missing service name for launch of %s", cmd.Path)
+		return svc, fmt.Errorf("missing service name for launch of %s", cmd.Path)
 	}
 
 	sockPath := fmt.Sprintf("/run/%s.sock", cmd.Name)
 
 	conn, err := vm.ListenUnixgram("unixgram", &net.UnixAddr{Name: sockPath, Net: "unixgram"})
 	if err != nil {
-		return fmt.Errorf("failed to listen on vm:%s: %w", sockPath, err)
+		return svc, fmt.Errorf("failed to listen on vm:%s: %w", sockPath, err)
 	}
 
 	defer conn.Close()
@@ -62,38 +70,36 @@ func (vm *VirtualMachine) LaunchService(ctx context.Context, cmd rpc.Command) er
 
 	cmd.Env = append(cmd.Env, "NOTIFY_SOCKET="+sockPath)
 
-	if _, err := vm.Launch(cmd); err != nil {
-		return fmt.Errorf("failed to launch %s: %w", cmd.Name, err)
+	pid, err := vm.Launch(cmd)
+	if err != nil {
+		return svc, fmt.Errorf("failed to launch %s: %w", cmd.Name, err)
 	}
 
+	svc.pid = pid
 	rc := make(chan int)
-	defer close(rc)
+	svc.ch = rc
 
 	go waitNotify(conn, rc)
-
 	go vm.waitService(cmd.Name, rc)
 
 	select {
 	case <-ctx.Done():
-		return fmt.Errorf("launch of %s timed out", cmd.Name)
+		return svc, fmt.Errorf("launch of %s timed out", cmd.Name)
 	case code := <-rc:
 		switch code {
 		case 0:
-			return nil
+			return svc, nil
 		case -1:
-			return fmt.Errorf("service %s exited", cmd.Name)
+			return svc, fmt.Errorf("service %s exited", cmd.Name)
 		default:
-			return fmt.Errorf("service %s exited with code %d", cmd.Name, code)
+			return svc, fmt.Errorf("service %s exited with code %d", cmd.Name, code)
 		}
 	}
 }
 
 func (vm *VirtualMachine) waitService(name string, ch chan int) {
+	defer close(ch)
 	exit, err := vm.WaitService(name)
-
-	defer func() {
-		_ = recover()
-	}()
 
 	switch {
 	case err != nil:
@@ -103,6 +109,14 @@ func (vm *VirtualMachine) waitService(name string, ch chan int) {
 	default:
 		ch <- exit
 	}
+}
+
+func (svc *Service) Wait() int {
+	return <-svc.ch
+}
+
+func (svc *Service) Signal(sig int) error {
+	return svc.vm.Signal(svc.pid, sig)
 }
 
 func waitNotify(conn *rpc.DatagramClient, ch chan int) {

@@ -3,8 +3,6 @@
 	"disks": {
 		"docker": {
 			"mount": "/var/lib/docker",
-			# TODO make default logic based on total/available disk space
-			"size": "40G",
 			"fs": "btrfs",
 			"mkfs": [
 				"--mixed",
@@ -19,27 +17,13 @@
 	},
 	"shares": {
 		"/Users": "/Users",
-		"/Volumes": "ro:/Volumes"
+		"/Volumes": "/Volumes"
 	},
 	"docker-socket": {
 		"host": "run/docker.sock",
 		"container": "/run/docker.sock"
 	},
-	"control": "run/vz.sock",
 	"dockerd": {
 		"storage-driver": "btrfs",
-	},
-	"sysctl": {
-		"net.ipv4.ip_forward": "1",
-		"net.ipv6.conf.all.forwarding": "1",
-		"net.ipv4.tcp_fin_timeout": "15",
-		"fs.file-max": "2097152",
-		"fs.inotify.max_user_watches": "524288",
-		"kernel.pid_max": "4194303",
-		"net.bridge.bridge-nf-call-iptables": "1",
-		"net.bridge.bridge-nf-call-ip6tables": "1",
-		"net.bridge.bridge-nf-call-arptables": "1",
-		"vm.max_map_count": "262144",
-		"user.max_user_namespaces": "28633",
 	},
 }

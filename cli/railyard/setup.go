@@ -1,65 +1,36 @@
 package railyard
 
 import (
-	"fmt"
-	"os"
-	"os/exec"
-	"path/filepath"
-
-	"github.com/spf13/cobra"
+	"github.com/amadigan/macoby/internal/applog"
+	"github.com/amadigan/macoby/internal/host/config"
+	"github.com/amadigan/macoby/internal/util"
+	"github.com/docker/cli/cli/command"
 )
 
-func NewSetupCommand(cli *Cli) *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "setup",
-		Short: "Setup railyard",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return runSetup(cli)
-		},
-	}
+var log = applog.New("railyard-cli")
 
-	return cmd
+type Cli struct {
+	Docker       *command.DockerCli
+	ConfigPath   *config.Path
+	SearchPath   string
+	Suffix       string
+	Config       *config.Layout
+	Env          map[string]string
+	overrideHome string
 }
 
-func runSetup(cli *Cli) error {
-	if err := cli.setup(); err != nil {
+func (c *Cli) setup() error {
+	env := util.Env()
+	layout, path, err := config.LoadConfig(env, c.overrideHome)
+	if err != nil {
 		return err
 	}
 
-	if err := os.MkdirAll(cli.Home, 0755); err != nil {
-		return fmt.Errorf("failed to create railyard directory %s: %w", cli.Home, err)
-	}
+	layout.SetDefaultSockets()
 
-	if err := cli.enableDaemon(daemonOptions{}); err != nil {
-		return fmt.Errorf("failed to enable railyard daemon: %w", err)
-	}
-
-	if err := cli.createDockerLink(); err != nil {
-		return fmt.Errorf("failed to create docker link: %w", err)
-	}
-
-	return nil
-}
-
-func (cli *Cli) createDockerLink() error {
-	dlpath := filepath.Join(cli.Home, "bin", "docker")
-
-	if _, err := os.Stat(dlpath); err == nil {
-		return nil
-	}
-
-	if dockerExec, _ := exec.LookPath("docker"); dockerExec != "" {
-		return nil
-	}
-
-	target, err := os.Executable()
-	if err != nil {
-		return fmt.Errorf("failed to get executable path: %w", err)
-	}
-
-	if err := os.Symlink(target, dlpath); err != nil {
-		return fmt.Errorf("failed to create symlink %s -> %s: %w", dlpath, target, err)
-	}
+	c.Config = layout
+	c.Env = env
+	c.ConfigPath = path
 
 	return nil
 }

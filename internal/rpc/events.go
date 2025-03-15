@@ -72,13 +72,15 @@ type emitterWriter struct {
 }
 
 func (ew *emitterWriter) Write(p []byte) (int, error) {
+	data := make([]byte, len(p))
+	copy(data, p)
 	ew.emitter <- LogEvent{
 		Name:   ew.name,
 		Method: ew.method,
-		Data:   p,
+		Data:   data,
 	}
 
-	return len(p), nil
+	return len(data), nil
 }
 
 func NewEmitterWriter(emitter chan<- LogEvent, name string, method LogMethod) io.Writer {

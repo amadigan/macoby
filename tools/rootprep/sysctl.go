@@ -2,7 +2,7 @@ package main
 
 import (
 	"bufio"
-	"io/fs"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,10 +18,11 @@ import (
 var sysctlDirs = []string{"/usr/lib/sysctl.d", "/lib/sysctl.d", "/etc/sysctl.d"}
 var sysctlFile = "/etc/sysctl.conf"
 
-func listSysctlFiles(root fs.ReadDirFS) ([]string, error) {
+func listSysctlFiles(root string) ([]string, error) {
 	files := map[string]string{}
 	for _, dir := range sysctlDirs {
-		entries, err := root.ReadDir(dir)
+		dir = filepath.Join(root, dir)
+		entries, err := os.ReadDir(dir)
 		if err != nil {
 			if os.IsNotExist(err) {
 				continue
@@ -37,7 +38,7 @@ func listSysctlFiles(root fs.ReadDirFS) ([]string, error) {
 
 	rv := util.MapValues(files)
 
-	if stat, err := os.Stat(sysctlFile); err == nil && stat.Mode().IsRegular() {
+	if stat, err := os.Stat(filepath.Join(root, sysctlFile)); err == nil && stat.Mode().IsRegular() {
 		rv = append(rv, sysctlFile)
 	}
 
@@ -51,13 +52,14 @@ func compileSysctls(root string) error {
 	}
 	defer rtfs.Close()
 
-	rdfs, _ := rtfs.FS().(fs.ReadDirFS)
-	files, err := listSysctlFiles(rdfs)
+	files, err := listSysctlFiles(root)
 	if err != nil {
 		return err
 	}
 
-	ctls, err := sysctl.LoadSysctls(rdfs, files...)
+	log.Printf("Compiling sysctl files: %v", files)
+
+	ctls, err := sysctl.LoadSysctls(files...)
 	if err != nil {
 		return err
 	}

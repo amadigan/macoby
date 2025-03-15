@@ -21,7 +21,6 @@ linters:
     - errname
     - errorlint
     - exhaustive
-    - exportloopref
     - forbidigo
     - forcetypeassert
     - funlen
@@ -52,7 +51,6 @@ linters:
     - predeclared
     - reassign
     - rowserrcheck
-    - tenv
     - thelper
     - tparallel
     - unconvert

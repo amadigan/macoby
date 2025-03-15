@@ -29,7 +29,7 @@ func stats(ctx context.Context, cli *Cli) error {
 
 	eventCh := make(chan event.Envelope, 100)
 
-	sync, err := client.ReceiveEvents(ctx, cli.Home, eventCh)
+	sync, err := client.ReceiveEvents(ctx, cli.Config.Home, eventCh)
 	if err != nil {
 		// TODO implement offline stat single-shot
 		panic(err)

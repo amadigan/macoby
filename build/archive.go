@@ -91,6 +91,7 @@ func addFileToZip(ctx context.Context, zw *zip.Writer, path string, name string,
 		CreatorVersion:     3<<8 | 63,       // Unix with XZ/Zstd compression
 		ExternalAttrs:      uint32(mode&0xfff) << 16,
 		Modified:           ts,
+		ReaderVersion:      63,
 	}
 
 	w, err := zw.CreateHeader(fh)

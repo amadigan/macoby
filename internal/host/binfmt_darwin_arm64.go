@@ -8,10 +8,41 @@ import (
 
 const amd64Magic = "\\x7fELF\\x02\\x01\\x01\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x02\\x00\\x3e\\x00"
 
+var rosettaBinfmt = binfmt{
+	name:        "rosetta",
+	magic:       amd64Magic,
+	interpreter: "/mnt/rosetta/rosetta",
+}
+
+var qemuAmd64Binfmt = binfmt{
+	name:        "qemu-x86_64",
+	magic:       amd64Magic,
+	interpreter: "/usr/bin/qemu-x86_64",
+}
+
+var qemuI386Binfmt = binfmt{
+	name:        "qemu-i386",
+	magic:       "\\x7fELF\\x01\\x01\\x01\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x02\\x00\\x03\\x00",
+	interpreter: "/usr/bin/qemu-i386",
+}
+
 // On arm64, use rosetta to run amd64 binaries, if available.
 func (vm *VirtualMachine) configureBinfmts() error {
-	if vz.LinuxRosettaDirectoryShareAvailability() == vz.LinuxRosettaAvailabilityInstalled {
+	useRosetta := false
+
+	if rosettaFlag := vm.Layout.Rosetta; rosettaFlag == nil {
+		useRosetta = vz.LinuxRosettaDirectoryShareAvailability() == vz.LinuxRosettaAvailabilityInstalled
+		vm.Layout.Rosetta = &useRosetta
+	} else {
+		useRosetta = *rosettaFlag
+	}
+
+	amd64binfmt := qemuAmd64Binfmt
+
+	if useRosetta {
 		log.Debug("enabling rosetta")
+
+		amd64binfmt = rosettaBinfmt
 
 		// set up rosetta
 		share, err := vz.NewLinuxRosettaDirectoryShare()
@@ -41,11 +72,14 @@ func (vm *VirtualMachine) configureBinfmts() error {
 				if err := vm.Mount("rosetta", "/mnt/rosetta", "virtiofs", []string{"ro"}); err != nil {
 					return fmt.Errorf("failed to mount /mnt/rosetta: %w", err)
 				}
-
-				return vm.registerBinfmt("rosetta", amd64Magic, "/mnt/rosetta/rosetta")
+				return nil
 			},
 		})
 	}
+
+	vm.inits = append(vm.inits, func(vm *VirtualMachine) error {
+		return vm.registerBinfmts(append(coreBinfmts, amd64binfmt, qemuI386Binfmt))
+	})
 
 	return nil
 }

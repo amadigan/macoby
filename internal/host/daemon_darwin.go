@@ -35,19 +35,19 @@ func IsDaemon(osArgs []string) bool {
 }
 
 func RunDaemon(osArgs []string, env map[string]string) {
-	layout, home, err := config.LoadConfig(env, "")
+	layout, _, err := config.LoadConfig(env, "")
 	if layout == nil {
 		panic(err)
 	}
 
-	listener, err := controlsock.ListenSocket(home)
+	listener, err := controlsock.ListenSocket(layout.Home)
 	if err != nil {
 		panic(err)
 	}
 
 	control := &ControlServer{
 		Layout: layout,
-		Home:   home,
+		Home:   layout.Home,
 		Env:    env,
 	}
 
@@ -57,15 +57,15 @@ func RunDaemon(osArgs []string, env map[string]string) {
 		panic(err)
 	}
 
-	if err != nil {
-		log.Fatal(err)
-	}
-
 	log.Infof("env: %+v", env)
 
-	if err := control.Layout.ResolvePaths(env, home); err != nil {
+	if err := control.Layout.ResolvePaths(env); err != nil {
 		log.Fatal(fmt.Errorf("failed to resolve paths: %w", err))
 	}
+
+	futureListener := util.Await(func() (*Listener, error) {
+		return NewListener(control.Layout.HostIface)
+	})
 
 	stateCh := make(chan DaemonState, 10)
 
@@ -132,7 +132,8 @@ func RunDaemon(osArgs []string, env map[string]string) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	if err := control.vm.LaunchService(ctx, dockerdCmd); err != nil {
+	svc, err := control.vm.LaunchService(ctx, dockerdCmd)
+	if err != nil {
 		log.Errorf("failed to launch dockerd: %w", err)
 
 		return
@@ -140,7 +141,20 @@ func RunDaemon(osArgs []string, env map[string]string) {
 
 	log.Infof("dockerd started in %s", time.Since(start))
 
+	go MonitorDockerd(ctx, control.vm, futureListener) // forwards container ports to the host
+
 	control.vm.UpdateStatus(ctx, event.StatusReady)
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh)
+
+	if layout.IdleTimeout > 0 {
+		control.stopLatch = NewStopLatch(layout.IdleTimeout, func() {
+			close(sigCh)
+		})
+
+		go MonitorContainerd(ctx, control.vm, control.stopLatch)
+	}
 
 	if len(osArgs) > 1 {
 		if sockCount, err := strconv.Atoi(osArgs[1]); err == nil {
@@ -158,9 +172,6 @@ func RunDaemon(osArgs []string, env map[string]string) {
 		log.Errorf("failed to GC: %w", err)
 	}
 
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh)
-
 	for sig := range sigCh {
 		log.Infof("received signal %s", sig)
 
@@ -169,7 +180,17 @@ func RunDaemon(osArgs []string, env map[string]string) {
 		}
 	}
 
+	stateCh <- DaemonState{Status: StatusStopping}
+
 	log.Info("shutting down")
+
+	if err := svc.Signal(int(syscall.SIGTERM)); err != nil {
+		log.Warnf("failed to signal dockerd: %v", err)
+	}
+
+	exit := svc.Wait()
+
+	log.Infof("dockerd exited with code %d", exit)
 }
 
 func (cs *ControlServer) SetupLogging(ctx context.Context) error {
@@ -249,7 +270,7 @@ func (cs *ControlServer) removeLogFile(stream string, path string) {
 }
 
 func (cs *ControlServer) ForwardLaunchdDockerSockets(count int) error {
-	for i := 0; i < count; i++ {
+	for i := range count {
 		socks, err := launchd.Sockets(fmt.Sprintf("docker%d", i))
 		if err != nil {
 			return fmt.Errorf("failed to get docker%d socket: %w", i, err)
@@ -258,7 +279,7 @@ func (cs *ControlServer) ForwardLaunchdDockerSockets(count int) error {
 		for _, sock := range socks {
 			log.Infof("docker listening on %s", sock.Addr())
 
-			go cs.vm.Forward(sock, "unix", cs.Layout.DockerSocket.ContainerPath)
+			go cs.vm.ForwardStopLatch(sock, "unix", cs.Layout.DockerSocket.ContainerPath, cs.stopLatch)
 		}
 	}
 

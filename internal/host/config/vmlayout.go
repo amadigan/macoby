@@ -5,11 +5,13 @@ import (
 	"fmt"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/pbnjay/memory"
 )
 
 type Layout struct {
+	Home           string                `json:"-" yaml:"-"`
 	Ram            uint64                `json:"ram,omitempty" yaml:"ram,omitempty"`
 	Cpu            uint                  `json:"cpu,omitempty" yaml:"cpu,omitempty"`
 	Kernel         *Path                 `json:"kernel,omitempty" yaml:"kernel,omitempty"`
@@ -26,6 +28,8 @@ type Layout struct {
 	Log            LogConfig             `json:"logs" yaml:"logs"`
 	DockerConfig   map[string]any        `json:"dockerd" yaml:"dockerd"`
 	MetricInterval uint16                `json:"metric-interval,omitempty" yaml:"metric-interval,omitempty"`
+	Rosetta        *bool                 `json:"rosetta,omitempty" yaml:"rosetta,omitempty"`
+	IdleTimeout    time.Duration         `json:"idle-timeout,omitempty" yaml:"idle-timeout,omitempty"`
 }
 
 type DiskImage struct {
@@ -109,6 +113,10 @@ func (l *Layout) SetDefaults() { //nolint:cyclop
 
 	if l.Log.Directory == nil || l.Log.Directory.Original == "" {
 		l.Log.Directory = &Path{Original: fmt.Sprintf("${HOME}/Library/Logs/%s", AppID)}
+	}
+
+	if l.IdleTimeout == 0 {
+		l.IdleTimeout = time.Minute
 	}
 }
 

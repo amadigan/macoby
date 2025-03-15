@@ -5,13 +5,16 @@ import (
 	"io"
 	"net"
 	"net/rpc"
+	"time"
 
 	"github.com/amadigan/macoby/internal/event"
 )
 
 type Guest interface {
 	// Init... initialize the guest
-	Init(InitRequest, *InitResponse) error
+	Init(InitRequest, *struct{}) error
+	// DHCP... start DHCPv4 on the main network interface
+	DHCP(struct{}, *DHCPResponse) error
 	// Write... overwrite/create a file
 	Write(WriteRequest, *struct{}) error
 	// Mkdir... create a directory, including parents
@@ -39,13 +42,13 @@ type Guest interface {
 }
 
 type InitRequest struct {
-	OverlaySize uint64
-	Sysctl      map[string]string
+	OverlaySize   uint64
+	ClockInterval time.Duration
+	Sysctl        map[string]string
 }
 
-type InitResponse struct {
-	IPv4 net.IP
-	IPv6 net.IP
+type DHCPResponse struct {
+	Address net.IP
 }
 
 type SignalRequest struct {
@@ -106,9 +109,14 @@ func NewGuestClient(c *rpc.Client) Guest {
 	return &GuestClient{c}
 }
 
-func (c *GuestClient) Init(req InitRequest, out *InitResponse) error {
+func (c *GuestClient) Init(req InitRequest, _ *struct{}) error {
 	//nolint:wrapcheck
-	return c.Call("Guest.Init", req, out)
+	return c.Call("Guest.Init", req, nil)
+}
+
+func (c *GuestClient) DHCP(_ struct{}, out *DHCPResponse) error {
+	//nolint:wrapcheck
+	return c.Call("Guest.DHCP", struct{}{}, out)
 }
 
 func (c *GuestClient) Write(req WriteRequest, _ *struct{}) error {

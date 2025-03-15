@@ -108,22 +108,6 @@ func MountTmp(device string, mountpoint string, size uint64) error {
 	return nil
 }
 
-func MountProc() error {
-	if err := unix.Mount("proc", "/proc", "proc", unix.MS_NOSUID|unix.MS_STRICTATIME, ""); err != nil {
-		return fmt.Errorf("Failed to mount /proc: %v", err)
-	}
-
-	return nil
-}
-
-func MountSys() error {
-	if err := unix.Mount("sysfs", "/sys", "sysfs", unix.MS_NOEXEC|unix.MS_NOATIME, ""); err != nil {
-		return fmt.Errorf("Failed to mount /sys: %v", err)
-	}
-
-	return nil
-}
-
 // MountCgroup ... mount unified cgroup2 hierarchy, supported by Docker starting with 20.10
 func MountCgroup() error {
 	// Other early boot tasks: mounting /proc, /sys, etc.

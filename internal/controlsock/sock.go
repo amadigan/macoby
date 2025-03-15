@@ -6,9 +6,12 @@ import (
 	"os"
 	"time"
 
+	"github.com/amadigan/macoby/internal/applog"
 	"github.com/amadigan/macoby/internal/host/config"
 	"github.com/mitchellh/go-ps"
 )
+
+var log *applog.Logger = applog.New("controlsock")
 
 type ExistingLockError struct {
 	PID       int
@@ -33,7 +36,7 @@ func socketPath(home string) string {
 }
 
 func LockSocket(home string) error {
-	contents := []byte(fmt.Sprintf("%d\t%d", os.Getpid(), os.Getppid()))
+	contents := fmt.Appendf(nil, "%d\t%d", os.Getpid(), os.Getppid())
 	sockpath := socketPath(home)
 
 	f, err := os.OpenFile(sockpath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0644)
@@ -65,7 +68,9 @@ func checkLock(sockpath string) (err error) {
 
 	defer func() {
 		if !lockValid {
-			_ = os.Remove(sockpath)
+			if err := os.Remove(sockpath); err != nil {
+				log.Warnf("failed to remove lock %s: %v", sockpath, err)
+			}
 		}
 	}()
 
@@ -93,9 +98,13 @@ func checkLock(sockpath string) (err error) {
 }
 
 func checkSocket(sockpath string) bool {
+	log.Infof("checking socket %s", sockpath)
 	conn, err := net.DialTimeout("unix", sockpath, 1*time.Second)
 	if err != nil {
-		_ = os.Remove(sockpath)
+		log.Infof("socket %s is not listening", sockpath)
+		if err := os.Remove(sockpath); err != nil {
+			log.Warnf("failed to remove socket %s: %v", sockpath, err)
+		}
 
 		return false
 	}
@@ -109,14 +118,21 @@ func ListenSocket(home string) (*net.UnixListener, error) {
 
 	sock, err := net.ListenUnix("unix", &net.UnixAddr{Name: sockpath, Net: "unix"})
 	if err != nil {
-		stat, err := os.Stat(sockpath)
-		if err == nil && stat.Mode()&os.ModeSocket != 0 && checkSocket(sockpath) {
-			return nil, &ExistingSocketError{Path: sockpath}
-		} else if err := checkLock(sockpath); err != nil {
-			return nil, err
+		var stat os.FileInfo
+		stat, err = os.Stat(sockpath)
+
+		if err == nil {
+			if stat.Mode()&os.ModeSocket != 0 {
+				if checkSocket(sockpath) {
+					return nil, &ExistingSocketError{Path: sockpath}
+				}
+			} else if err := checkLock(sockpath); err != nil {
+				return nil, err
+			}
 		}
 
-		_ = os.Remove
+		_ = os.Remove(sockpath)
+
 		sock, err = net.ListenUnix("unix", &net.UnixAddr{Name: sockpath, Net: "unix"})
 	}
 
