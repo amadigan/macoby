@@ -8,6 +8,7 @@ import (
 	"path"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -105,25 +106,11 @@ func parseArchFlag(archFlag string) []string {
 	case "host":
 		allArchitectures = []string{runtime.GOARCH}
 	case "alien":
-		for i, arch := range allArchitectures {
-			if arch == runtime.GOARCH {
-				allArchitectures = append(allArchitectures[:i], allArchitectures[i+1:]...)
-
-				break
-			}
+		if ind := slices.Index(allArchitectures, runtime.GOARCH); ind != -1 {
+			allArchitectures = slices.Delete(allArchitectures, ind, ind+1)
 		}
 	default:
-		found := false
-
-		for _, arch := range allArchitectures {
-			if arch == archFlag {
-				found = true
-
-				break
-			}
-		}
-
-		if !found {
+		if !slices.Contains(allArchitectures, archFlag) {
 			panic(fmt.Errorf("unknown architecture %s", archFlag))
 		}
 

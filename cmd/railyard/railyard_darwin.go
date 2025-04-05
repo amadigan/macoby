@@ -604,8 +604,8 @@ func forwardBuilder(alias string, args, osargs []string) ([]string, []string, []
 		},
 	}
 	for _, al := range aliases {
-		if fwargs, changed := command.StringSliceReplaceAt(args, al[0], al[1], 0); changed {
-			fwosargs, _ := command.StringSliceReplaceAt(osargs, al[0], al[1], -1)
+		if fwargs, changed := stringSliceReplaceAt(args, al[0], al[1], 0); changed {
+			fwosargs, _ := stringSliceReplaceAt(osargs, al[0], al[1], -1)
 			fwcmdpath := al[2]
 
 			return fwargs, fwosargs, fwcmdpath, true
@@ -613,6 +613,37 @@ func forwardBuilder(alias string, args, osargs []string) ([]string, []string, []
 	}
 
 	return args, osargs, nil, false
+}
+
+// stringSliceReplaceAt replaces the sub-slice find, with the sub-slice replace, in the string
+// slice s, returning a new slice and a boolean indicating if the replacement happened.
+// requireIdx is the index at which old needs to be found at (or -1 to disregard that).
+func stringSliceReplaceAt(s, find, replace []string, requireIndex int) ([]string, bool) {
+	idx := stringSliceIndex(s, find)
+	if (requireIndex != -1 && requireIndex != idx) || idx == -1 {
+		return s, false
+	}
+	out := append([]string{}, s[:idx]...)
+	out = append(out, replace...)
+	out = append(out, s[idx+len(find):]...)
+	return out, true
+}
+
+func stringSliceIndex(s, subs []string) int {
+	j := 0
+	if len(subs) > 0 {
+		for i, x := range s {
+			if j < len(subs) && subs[j] == x {
+				j++
+			} else {
+				j = 0
+			}
+			if len(subs) == j {
+				return i + 1 - j
+			}
+		}
+	}
+	return -1
 }
 
 // hasBuilderName checks if a builder name is defined in args or env vars
