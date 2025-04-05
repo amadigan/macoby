@@ -1,6 +1,4 @@
 # Bugs
-- Remove railyard.sock from launchd activation
-- Handle exit codes properly for vm enable and disable
 - Add better logging to vm enable and disable
 
 # Incomplete Features

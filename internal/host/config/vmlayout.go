@@ -35,6 +35,7 @@ type Layout struct {
 type DiskImage struct {
 	Mount         string   `json:"mount" yaml:"mount"`
 	Size          string   `json:"size" yaml:"size"`
+	Backup        bool     `json:"backup" yaml:"backup"`
 	FS            string   `json:"fs" yaml:"fs"`
 	FormatOptions []string `json:"mkfs" yaml:"mkfs"`
 	ReadOnly      bool     `json:"ro,omitempty" yaml:"ro,omitempty"`

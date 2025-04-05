@@ -77,6 +77,14 @@ func (vm *VirtualMachine) prepareDisks() error {
 			if err := setFileSize(diskInfo.Path.Resolved, size); err != nil {
 				return fmt.Errorf("failed to create disk %s (%s): %w", label, diskInfo.Path.Resolved, err)
 			}
+
+			if !diskInfo.Backup {
+				if err := disableBackup(diskInfo.Path.Resolved); err != nil {
+					return fmt.Errorf("failed to disable backup for disk %s: %w", label, err)
+				}
+			} else if err := enableBackup(diskInfo.Path.Resolved); err != nil {
+				return fmt.Errorf("failed to enable backup for disk %s: %w", label, err)
+			}
 		} else if err != nil {
 			return fmt.Errorf("failed to stat disk %s: %w", label, err)
 		}
@@ -295,4 +303,15 @@ func (vm *VirtualMachine) prepareAutoImages(images []*config.DiskImage) error {
 	}
 
 	return nil
+}
+
+const timeMachieBackupXattr = "com.apple.metadata:com_apple_backup_excludeItem"
+const timeMachineBackupXattrValue = "com.apple.backupd"
+
+func disableBackup(path string) error {
+	return unix.Setxattr(path, timeMachieBackupXattr, []byte(timeMachineBackupXattrValue), 0)
+}
+
+func enableBackup(path string) error {
+	return unix.Removexattr(path, timeMachieBackupXattr)
 }
